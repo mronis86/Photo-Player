@@ -1,0 +1,2258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FRAMEFLOW — Visual Playback System</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Bebas+Neue&family=Barlow:wght@400;500;600;700&display=swap');
+:root {
+  /* Surfaces — 4-stop depth scale */
+  --bg:#07070a;
+  --s1:#0d0d11;  /* panel background */
+  --s2:#121216;  /* hover / mild depth */
+  --s3:#18181e;  /* input / button fill */
+  --s4:#1e1e26;  /* raised element */
+  /* Borders */
+  --border:#1e1e24;
+  --border2:#282832;
+  --border3:#343442;
+  /* Accent palette */
+  --accent:#d4ff47;
+  --accent-dim:rgba(212,255,71,0.12);
+  --accent2:#ff6b35;
+  --blue:#4da6ff;
+  --blue-dim:rgba(77,166,255,0.12);
+  --red:#ff4444;
+  --red-dim:rgba(255,68,68,0.12);
+  --green:#3bff8a;
+  /* Text — 3-stop hierarchy */
+  --text:#e8e8f0;       /* primary */
+  --text2:#b0b0c0;      /* secondary */
+  --text3:#707080;      /* tertiary / disabled */
+  --radius:5px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Barlow',sans-serif;font-weight:500;background:var(--bg);color:var(--text);height:100vh;overflow:hidden;display:flex;flex-direction:column;}
+
+/* ── HEADER ── */
+header{height:50px;background:var(--s1);border-bottom:1px solid var(--border2);display:flex;align-items:center;padding:0 18px;gap:14px;flex-shrink:0;z-index:10;}
+.logo{font-family:'Bebas Neue';font-size:24px;letter-spacing:5px;color:var(--accent);}
+.logo-sub{font-family:'DM Mono';font-size:11px;letter-spacing:3px;color:var(--text3);}
+.divider{width:1px;height:20px;background:var(--border2);flex-shrink:0;}
+.badge{display:flex;align-items:center;gap:6px;padding:4px 12px;border-radius:4px;font-family:'DM Mono';font-size:11px;letter-spacing:1px;}
+.badge-live{background:var(--red-dim);border:1px solid rgba(255,68,68,0.35);color:var(--red);}
+.badge-idle{background:rgba(255,255,255,0.04);border:1px solid var(--border2);color:var(--text3);}
+.dot{width:6px;height:6px;border-radius:50%;}
+.dot-red{background:var(--red);animation:blink 1.2s ease-in-out infinite;}
+.dot-grey{background:var(--text3);}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.25}}
+.header-right{margin-left:auto;display:flex;align-items:center;gap:8px;}
+.btn-playout{padding:5px 16px;background:var(--accent);color:#000;border:none;border-radius:4px;font-family:'Bebas Neue';font-size:14px;letter-spacing:3px;cursor:pointer;transition:all 0.15s;}
+.btn-playout:hover{background:#e5ff68;}
+.btn-sm{padding:5px 12px;background:var(--s3);color:var(--text2);border:1px solid var(--border2);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;cursor:pointer;transition:all 0.15s;}
+.btn-sm:hover{border-color:var(--border3);color:var(--text);}
+
+/* ── LAYOUT ── */
+.main{display:grid;grid-template-columns:320px 1fr 320px;flex:1;min-height:0;overflow:hidden;}
+.panel{background:var(--s1);display:flex;flex-direction:column;overflow:hidden;}
+.panel-left{border-right:1px solid var(--border2);}
+.panel-right{border-left:1px solid var(--border2);}
+.sec{padding:12px 16px;border-bottom:1px solid var(--border);}
+.sec-label{font-family:'DM Mono';font-size:11px;letter-spacing:1px;color:var(--text3);text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;}
+.sec-overflow{flex:1;overflow-y:auto;min-height:0;}
+.sec-overflow::-webkit-scrollbar{width:3px;}
+.sec-overflow::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
+
+/* ── UPLOAD ── */
+.upload-zone{border:1.5px dashed var(--border3);border-radius:var(--radius);padding:12px 10px;text-align:center;cursor:pointer;transition:all 0.2s;position:relative;}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);background:var(--accent-dim);}
+.upload-zone input{display:none;}
+.upload-zone p{font-size:12px;color:var(--text3);margin-top:3px;line-height:1.6;}
+.upload-zone strong{color:var(--accent);}
+
+/* ── CUE LIST ── */
+.cue-list{list-style:none;padding:4px 0 20px;}
+.cue-item,.group-row{display:flex;align-items:center;gap:9px;padding:8px 12px 8px 14px;cursor:pointer;transition:background 0.1s;user-select:none;border-left:3px solid transparent;}
+.cue-item:hover,.group-row:hover{background:var(--s2);}
+.cue-item.active{background:var(--s2);border-left-color:var(--accent);}
+.cue-item.program{background:rgba(255,68,68,0.05);border-left-color:var(--red);}
+.cue-item.preview{background:rgba(212,255,71,0.04);border-left-color:var(--accent);}
+.group-row{border-top:1px solid var(--border);}
+.group-row:first-child{border-top:none;}
+.group-row.active{background:var(--s2);border-left-color:var(--accent2);}
+.group-row.program{background:rgba(255,68,68,0.05);border-left-color:var(--red);}
+.grp-chevron{font-size:10px;color:var(--text3);width:10px;flex-shrink:0;transition:transform 0.15s;display:inline-block;}
+.group-row.open .grp-chevron{transform:rotate(90deg);color:var(--text2);}
+.group-child{display:flex;align-items:center;gap:9px;padding:7px 12px 7px 36px;cursor:pointer;transition:background 0.1s;border-left:3px solid transparent;background:rgba(0,0,0,0.2);}
+.group-child:hover{background:var(--s2);}
+.group-child.active{background:var(--s3);border-left-color:var(--accent);}
+.group-child.program{background:rgba(255,68,68,0.05);border-left-color:var(--red);}
+.group-add-row{display:flex;align-items:center;gap:7px;padding:7px 12px 7px 36px;cursor:pointer;color:var(--text3);font-size:12px;transition:all 0.15s;background:rgba(0,0,0,0.2);border-bottom:1px solid var(--border);}
+.group-add-row:hover{color:var(--accent2);background:rgba(255,107,53,0.07);}
+.group-add-row input{display:none;}
+.group-section{border-bottom:1px solid var(--border);}
+
+/* Larger thumbnails — easier to identify */
+.cue-thumb{width:54px;height:36px;object-fit:cover;border-radius:3px;flex-shrink:0;border:1px solid var(--border2);}
+.cue-thumb-ph{width:54px;height:36px;border-radius:3px;flex-shrink:0;border:1px dashed var(--border2);background:var(--s3);}
+.cue-info{flex:1;min-width:0;}
+.cue-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--text);}
+.cue-meta{font-family:'DM Mono';font-weight:500;font-size:10px;color:var(--text3);margin-top:3px;display:flex;gap:5px;align-items:center;flex-wrap:wrap;}
+.cue-num{font-family:'DM Mono';font-size:11px;color:var(--text3);width:18px;text-align:right;flex-shrink:0;}
+.cue-mode-badge{font-family:'DM Mono';font-size:10px;padding:2px 6px;border-radius:3px;line-height:1;}
+.mode-full{background:rgba(212,255,71,0.1);color:#c4ef30;}
+.mode-blur{background:var(--blue-dim);color:#7bbfff;}
+.mode-split{background:rgba(255,107,53,0.12);color:#ff8a58;}
+.eoc-badge{font-family:'DM Mono';font-size:10px;padding:2px 6px;border-radius:3px;line-height:1;}
+.eoc-hold{background:var(--blue-dim);color:#7bbfff;}
+.eoc-fade{background:rgba(212,255,71,0.1);color:#c4ef30;}
+.eoc-clear{background:var(--red-dim);color:var(--red);}
+.cue-actions{display:flex;gap:3px;flex-shrink:0;opacity:0;transition:opacity 0.1s;}
+.cue-item:hover .cue-actions,.group-row:hover .cue-actions,.group-child:hover .cue-actions{opacity:1;}
+.cue-act-btn{background:var(--s3);border:1px solid var(--border2);color:var(--text2);border-radius:3px;padding:3px 8px;font-size:11px;font-family:'DM Mono';cursor:pointer;transition:all 0.1s;}
+.cue-act-btn:hover{border-color:var(--accent);color:var(--accent);}
+.cue-act-btn.del:hover{border-color:var(--red);color:var(--red);}
+.empty-msg{color:var(--text3);font-size:13px;padding:28px 16px;text-align:center;line-height:2;}
+
+/* ── DUAL MONITOR LAYOUT ── */
+.monitor-area{display:flex;flex-direction:column;background:#050507;min-width:0;}
+.dual-monitors{display:grid;grid-template-columns:var(--pvw-split,38%) 4px 1fr;flex:1;min-height:0;gap:0;overflow:hidden;}
+.monitor-col{display:flex;flex-direction:column;overflow:hidden;min-height:0;}
+
+/* Drag splitter */
+.monitor-splitter{background:var(--border2);cursor:col-resize;position:relative;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:background 0.1s;z-index:5;}
+.monitor-splitter:hover,.monitor-splitter.dragging{background:var(--accent);}
+.monitor-splitter::after{content:'⋮';font-size:10px;color:var(--text3);line-height:1;pointer-events:none;}
+.monitor-splitter:hover::after,.monitor-splitter.dragging::after{color:#000;}
+
+.monitor-header{height:36px;background:var(--s1);border-bottom:1px solid var(--border2);display:flex;align-items:center;padding:0 12px;gap:8px;flex-shrink:0;}
+.monitor-label{font-family:'DM Mono';font-size:11px;letter-spacing:2px;color:var(--text3);}
+.monitor-label.pgm{color:var(--red);opacity:1;}
+.monitor-stage{flex:1;display:flex;align-items:center;justify-content:center;padding:14px;overflow:hidden;}
+.preview-stage{background:#050507;}
+.program-stage{background:#030304;}
+
+.preview-wrap{position:relative;overflow:hidden;background:#000;}
+.pvw-wrap{box-shadow:0 0 20px rgba(0,0,0,0.8),0 0 0 1px var(--border2);}
+.pvw-wrap[data-asp="16:9"]{width:min(420px,100%);aspect-ratio:16/9;}
+.pvw-wrap[data-asp="9:16"]{height:min(280px,90%);aspect-ratio:9/16;}
+.pvw-wrap[data-asp="1:1"]{width:min(260px,80%);aspect-ratio:1/1;}
+.pgm-wrap{box-shadow:0 0 40px rgba(255,68,68,0.1),0 0 0 2px rgba(255,68,68,0.3);}
+.pgm-wrap[data-asp="16:9"]{width:min(600px,100%);aspect-ratio:16/9;}
+.pgm-wrap[data-asp="9:16"]{height:min(380px,90%);aspect-ratio:9/16;}
+.pgm-wrap[data-asp="1:1"]{width:min(340px,80%);aspect-ratio:1/1;}
+
+.monitor-toolbar{height:40px;background:var(--s1);border-bottom:1px solid var(--border2);display:flex;align-items:center;padding:0 12px;gap:10px;flex-shrink:0;}
+.aspect-btns{display:flex;gap:3px;}
+.asp-btn{padding:4px 10px;border:1px solid var(--border2);background:var(--s3);color:var(--text2);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;cursor:pointer;transition:all 0.15s;}
+.asp-btn.active{border-color:var(--accent);background:var(--accent-dim);color:var(--accent);}
+.asp-btn:hover:not(.active){border-color:var(--border3);color:var(--text2);}
+
+.monitor-overlay-label{position:absolute;top:6px;left:6px;z-index:20;font-family:'DM Mono';font-size:9px;letter-spacing:2px;padding:3px 7px;border-radius:2px;pointer-events:none;}
+.pvw-label{background:rgba(212,255,71,0.15);border:1px solid rgba(212,255,71,0.3);color:var(--accent);}
+.pgm-label{background:rgba(255,68,68,0.2);border:1px solid rgba(255,68,68,0.45);color:var(--red);}
+
+.pvw-play-btn{padding:4px 11px;background:var(--s3);border:1px solid var(--border2);color:var(--text2);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;cursor:pointer;transition:all 0.15s;white-space:nowrap;}
+.pvw-play-btn:hover{border-color:var(--border3);color:var(--text);background:var(--s4);}
+.pvw-play-btn.playing{border-color:var(--accent);color:var(--accent);background:var(--accent-dim);}
+.pvw-play-btn.playing:hover{border-color:var(--red);color:var(--red);background:var(--red-dim);}
+.pvw-wrap.is-playing{box-shadow:0 0 20px rgba(212,255,71,0.12),0 0 0 2px rgba(212,255,71,0.45);}
+
+/* ── TRANSPORT ── */
+.transport{height:72px;background:#0a0a0e;border-top:2px solid var(--border2);display:flex;align-items:center;padding:0 14px;gap:0;flex-shrink:0;}
+
+/* Zone dividers */
+.t-zone{display:flex;align-items:center;gap:8px;padding:0 14px;height:100%;}
+.t-zone-sep{width:1px;height:44px;background:var(--border2);flex-shrink:0;}
+
+/* CUE NAV zone */
+.t-zone-nav{gap:6px;padding:0 12px 0 0;}
+.nav-btn{width:38px;height:38px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--s3);color:var(--text2);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;flex-shrink:0;}
+.nav-btn:hover{border-color:var(--border3);background:var(--s4);color:var(--text);}
+
+/* CUE COUNTER zone */
+.t-zone-counter{flex-direction:column;align-items:flex-start;gap:1px;min-width:52px;padding:0 14px;}
+.t-counter-label{font-family:'DM Mono';font-size:9px;color:var(--text3);letter-spacing:1px;text-transform:uppercase;}
+.t-counter-val{font-family:'DM Mono';font-size:20px;font-weight:500;color:var(--text);line-height:1;}
+.t-counter-val b{color:var(--accent);}
+
+/* PROGRESS zone */
+.t-zone-progress{flex:1;flex-direction:column;gap:5px;min-width:0;padding:0 14px;}
+.progress-track{height:5px;background:var(--border2);border-radius:3px;cursor:pointer;position:relative;}
+.progress-fill{height:100%;background:var(--accent);border-radius:3px;width:0%;transition:none;}
+.progress-labels{display:flex;justify-content:space-between;font-family:'DM Mono';font-size:11px;}
+.progress-labels span{color:var(--text2);}
+.t-loop-btn{padding:4px 10px;border:1px solid var(--border2);background:var(--s3);color:var(--text3);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:10px;cursor:pointer;transition:all 0.15s;white-space:nowrap;align-self:flex-end;}
+.t-loop-btn:hover{border-color:var(--border3);color:var(--text2);}
+.t-loop-btn.on{background:var(--accent-dim);border-color:rgba(212,255,71,0.4);color:var(--accent);}
+
+/* PROGRAM CONTROLS zone — fade/clear */
+.t-zone-pgm{gap:6px;padding:0 14px;}
+.pgm-btn{height:38px;padding:0 14px;border-radius:var(--radius);border:1px solid var(--border2);background:var(--s3);color:var(--text2);font-family:'Barlow',sans-serif;font-weight:700;font-size:11px;letter-spacing:0.5px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.15s;white-space:nowrap;flex-shrink:0;}
+.pgm-btn:hover{border-color:var(--border3);background:var(--s4);color:var(--text);}
+.pgm-btn.fade-btn:hover{border-color:rgba(77,166,255,0.5);color:var(--blue);background:var(--blue-dim);}
+.pgm-btn.cut-btn:hover{border-color:rgba(255,68,68,0.5);color:var(--red);background:var(--red-dim);}
+.pgm-btn.stop-lit{background:var(--red-dim);border-color:var(--red);color:var(--red);}
+
+/* TAKE LIVE — the primary action */
+.t-zone-take{padding:0 0 0 14px;}
+.take-btn{height:50px;padding:0 24px;background:var(--red);color:#fff;border:none;border-radius:var(--radius);font-family:'Bebas Neue';font-size:22px;letter-spacing:3px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;transition:all 0.12s;flex-shrink:0;box-shadow:0 0 20px rgba(255,68,68,0.3),inset 0 1px 0 rgba(255,255,255,0.15);}
+.take-btn:hover{background:#ff2222;box-shadow:0 0 28px rgba(255,68,68,0.5),inset 0 1px 0 rgba(255,255,255,0.2);}
+.take-btn:active{transform:scale(0.97);box-shadow:0 0 10px rgba(255,68,68,0.3);}
+.take-btn .take-key{font-family:'DM Mono';font-size:9px;letter-spacing:2px;opacity:0.55;font-weight:400;line-height:1;}
+.take-btn.on-air{background:#cc0000;animation:take-pulse 2s ease-in-out infinite;}
+@keyframes take-pulse{0%,100%{box-shadow:0 0 20px rgba(255,68,68,0.3),inset 0 1px 0 rgba(255,255,255,0.15)}50%{box-shadow:0 0 35px rgba(255,68,68,0.55),inset 0 1px 0 rgba(255,255,255,0.15)}}
+
+/* ── RIGHT PANEL — controls ── */
+.settings-scroll{flex:1;overflow-y:auto;min-height:0;}
+.settings-scroll::-webkit-scrollbar{width:3px;}
+.settings-scroll::-webkit-scrollbar-thumb{background:var(--border2);}
+
+.ctrl-row{margin-bottom:14px;}
+.ctrl-label{font-size:12px;font-weight:600;color:var(--text2);display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;}
+.ctrl-label em{color:var(--accent);font-style:normal;font-size:12px;font-weight:700;font-family:'DM Mono';}
+
+/* Sliders — thicker, nicer thumb */
+input[type=range]{width:100%;height:4px;-webkit-appearance:none;background:var(--border2);border-radius:2px;outline:none;cursor:pointer;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent);cursor:pointer;transition:box-shadow 0.15s;}
+input[type=range]:hover::-webkit-slider-thumb{box-shadow:0 0 0 4px rgba(212,255,71,0.18);}
+
+/* Number inputs */
+input[type=number]{background:var(--s3);border:1px solid var(--border2);color:var(--text);border-radius:var(--radius);padding:7px 9px;font-family:'DM Mono';font-size:13px;outline:none;width:100%;transition:border-color 0.15s;}
+input[type=number]:focus{border-color:var(--border3);}
+
+/* Text inputs */
+input[type=text]{background:var(--s3);border:1px solid var(--border2);color:var(--text);border-radius:var(--radius);padding:8px 11px;font-family:'Barlow',sans-serif;font-size:13px;outline:none;width:100%;transition:border-color 0.15s;}
+input[type=text]:focus{border-color:var(--border3);}
+input[type=text]::placeholder{color:var(--text3);}
+
+/* Color pickers */
+input[type=color]{-webkit-appearance:none;width:30px;height:26px;border:1px solid var(--border2);border-radius:4px;background:none;cursor:pointer;padding:2px;}
+input[type=color]::-webkit-color-swatch-wrapper{padding:0;}
+input[type=color]::-webkit-color-swatch{border:none;border-radius:2px;}
+
+textarea{background:var(--s3);border:1px solid var(--border2);color:var(--text);border-radius:var(--radius);padding:6px 9px;font-family:'Barlow',sans-serif;font-size:12px;outline:none;width:100%;resize:vertical;min-height:46px;line-height:1.5;}
+textarea:focus{border-color:var(--border3);}
+
+/* ── BUTTON GRIDS — sel-btn, kb-btn, trans-opt all share this base ── */
+.sel-row-2{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
+.sel-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;}
+
+/* Base button — now has a visible surface so inactive is clearly clickable */
+.sel-btn{padding:9px 4px;border:1px solid var(--border2);background:var(--s3);color:var(--text2);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.5px;cursor:pointer;text-align:center;transition:all 0.15s;}
+.sel-btn:hover{border-color:var(--border3);background:var(--s4);color:var(--text);}
+.sel-btn.on-y{border-color:rgba(212,255,71,0.5);background:var(--accent-dim);color:var(--accent);}
+.sel-btn.on-b{border-color:rgba(77,166,255,0.45);background:var(--blue-dim);color:var(--blue);}
+.sel-btn.on-r{border-color:rgba(255,68,68,0.45);background:var(--red-dim);color:var(--red);}
+
+/* Mode cards — left-accent strip when selected */
+.mode-cards-mini{display:flex;flex-direction:column;gap:5px;}
+.mode-mini{padding:10px 12px 10px 14px;border:1px solid var(--border2);border-left:3px solid transparent;border-radius:var(--radius);cursor:pointer;transition:all 0.15s;background:var(--s3);}
+.mode-mini:hover{border-color:var(--border3);background:var(--s4);}
+.mode-mini.sel{border-color:var(--border2);border-left-color:var(--accent);background:var(--accent-dim);}
+.mode-mini-title{font-size:13px;font-weight:700;color:var(--text2);transition:color 0.15s;}
+.mode-mini.sel .mode-mini-title{color:var(--accent);}
+.mode-mini-desc{font-size:11px;color:var(--text3);line-height:1.5;margin-top:1px;}
+
+/* ── CAPTION EDITOR ── */
+.caption-field{margin-bottom:9px;}
+.caption-field label{display:block;font-size:11px;font-weight:600;color:var(--text2);margin-bottom:5px;}
+.caption-color-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
+.caption-color-item{display:flex;align-items:center;gap:6px;flex:1;}
+.caption-color-item label{font-size:11px;font-weight:600;color:var(--text2);white-space:nowrap;}
+.caption-preview-bar{height:44px;border-radius:var(--radius);overflow:hidden;position:relative;margin-top:10px;background:#0c0c10;border:1px solid var(--border2);}
+.caption-preview-bar .cpb-bg{position:absolute;inset:0;}
+.caption-preview-bar .cpb-text{position:absolute;bottom:0;left:0;right:0;padding:5px 10px;display:flex;flex-direction:column;}
+.caption-preview-bar .cpb-tag{font-family:'DM Mono';font-size:9px;letter-spacing:2px;line-height:1;}
+.caption-preview-bar .cpb-title{font-family:'Bebas Neue';font-size:16px;letter-spacing:1px;line-height:1.1;}
+.caption-opacity-row{display:flex;align-items:center;gap:8px;margin-top:7px;}
+.caption-opacity-row label{font-size:11px;font-weight:600;color:var(--text2);white-space:nowrap;flex-shrink:0;}
+.caption-pos-btns{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-top:6px;}
+.caption-pos-btn{padding:9px 4px;background:var(--s3);border:1px solid var(--border2);color:var(--text2);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;cursor:pointer;text-align:center;transition:all 0.15s;}
+.caption-pos-btn:hover{border-color:var(--border3);background:var(--s4);}
+.caption-pos-btn.active{border-color:rgba(212,255,71,0.45);background:var(--accent-dim);color:var(--accent);}
+
+/* Advanced toggle link */
+.adv-toggle{background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;padding:0;transition:color 0.15s;}
+.adv-toggle:hover{color:var(--text2);}
+.adv-toggle.open{color:var(--text2);}
+
+/* ── KB GRID ── */
+.kb-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;}
+.kb-btn{padding:9px 4px;border:1px solid var(--border2);background:var(--s3);color:var(--text2);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;letter-spacing:0.5px;cursor:pointer;text-align:center;transition:all 0.15s;}
+.kb-btn:hover{border-color:var(--border3);background:var(--s4);color:var(--text);}
+.kb-btn.active{border-color:rgba(212,255,71,0.45);background:var(--accent-dim);color:var(--accent);}
+.kb-btn.kbauto{border-color:rgba(255,107,53,0.4);background:rgba(255,107,53,0.08);color:var(--accent2);}
+.kb-btn.custom-pan{border-color:rgba(77,166,255,0.4);background:var(--blue-dim);color:var(--blue);}
+
+/* ── CUSTOM PAN POINT EDITOR ── */
+#kbPointEditor{margin-top:8px;display:none;}
+#kbPointEditor.visible{display:block;}
+.kb-point-wrap{position:relative;border-radius:4px;overflow:hidden;background:#000;user-select:none;touch-action:none;}
+.kb-point-wrap img{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;pointer-events:none;}
+.kb-point-frame{position:absolute;box-sizing:border-box;cursor:move;}
+.kb-point-frame.start-frame{border:2px solid var(--accent);background:rgba(212,255,71,0.08);box-shadow:0 0 0 1px rgba(0,0,0,0.5),inset 0 0 0 1px rgba(212,255,71,0.2);}
+.kb-point-frame.end-frame{border:2px solid var(--blue);background:rgba(77,166,255,0.08);box-shadow:0 0 0 1px rgba(0,0,0,0.5),inset 0 0 0 1px rgba(77,166,255,0.2);}
+.kb-point-frame.start-frame:hover{background:rgba(212,255,71,0.14);}
+.kb-point-frame.end-frame:hover{background:rgba(77,166,255,0.14);}
+.kb-point-frame.dragging{opacity:0.85;z-index:10;}
+.kb-frame-label{position:absolute;top:3px;left:4px;font-family:'DM Mono';font-size:10px;font-weight:500;letter-spacing:1px;padding:2px 5px;border-radius:2px;pointer-events:none;}
+.start-frame .kb-frame-label{background:rgba(212,255,71,0.92);color:#000;}
+.end-frame .kb-frame-label{background:rgba(77,166,255,0.92);color:#000;}
+.kb-frame-resize{position:absolute;bottom:-1px;right:-1px;width:14px;height:14px;cursor:se-resize;}
+.kb-frame-resize::before{content:'';position:absolute;bottom:3px;right:3px;width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;border-radius:0 0 2px 0;}
+.start-frame .kb-frame-resize{color:var(--accent);}
+.end-frame .kb-frame-resize{color:var(--blue);}
+#kbArrowSvg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;}
+#kbArrowLine{stroke:rgba(255,255,255,0.25);stroke-width:1;stroke-dasharray:4 3;marker-end:url(#kbArrow);}
+.kb-point-legend{display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;}
+.kb-legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);}
+.kb-legend-dot{width:8px;height:3px;border-radius:1px;}
+.kb-point-actions{display:flex;gap:4px;margin-top:6px;}
+.kb-point-btn{flex:1;padding:9px 4px;background:var(--s3);border:1px solid var(--border2);color:var(--text2);border-radius:var(--radius);font-weight:600;font-size:12px;cursor:pointer;transition:all 0.15s;text-align:center;}
+.kb-point-btn:hover{border-color:var(--border3);background:var(--s4);color:var(--text);}
+.kb-info-row{font-family:'DM Mono';font-size:10px;color:var(--text3);margin-top:6px;display:flex;gap:10px;}
+.kb-info-row em{color:var(--text2);font-style:normal;}
+
+/* Transition selector */
+.trans-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;}
+.trans-opt{padding:9px 4px;border:1px solid var(--border2);background:var(--s3);color:var(--text2);border-radius:var(--radius);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;cursor:pointer;text-align:center;transition:all 0.15s;}
+.trans-opt:hover{border-color:var(--border3);background:var(--s4);color:var(--text);}
+.trans-opt.active{border-color:rgba(77,166,255,0.45);background:var(--blue-dim);color:var(--blue);}
+
+/* ── COLLAPSIBLE SECTIONS ── */
+.coll-sec{border-bottom:1px solid var(--border);}
+
+/* Header — distinct raised surface, clearly clickable */
+.coll-hdr{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;cursor:pointer;user-select:none;background:var(--s1);transition:background 0.15s;}
+.coll-hdr:hover{background:var(--s2);}
+.coll-hdr.open{background:var(--s2);}
+
+/* Section label inside header — slightly brighter when open */
+.coll-hdr .sec-label{margin-bottom:0;font-size:12px;font-weight:700;letter-spacing:0.5px;color:var(--text3);text-transform:uppercase;transition:color 0.15s;}
+.coll-hdr.open .sec-label{color:var(--text);}
+
+/* Chevron — boxed so it's clearly a toggle indicator */
+.coll-chevron{width:18px;height:18px;border-radius:4px;background:var(--s3);border:1px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:9px;color:var(--text3);transition:all 0.2s;flex-shrink:0;}
+.coll-hdr.open .coll-chevron{transform:rotate(90deg);color:var(--text2);border-color:var(--border3);}
+.coll-hdr:hover .coll-chevron{border-color:var(--border3);}
+
+/* Body — slightly sunken vs the header */
+.coll-body{padding:14px 16px 16px;display:none;background:var(--bg);}
+.coll-body.open{display:block;}
+
+/* ── MODE-SPECIFIC SUB-PANELS ── */
+.mode-sub{display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border2);}
+.mode-sub.active{display:block;}
+.mode-sub-lbl{font-size:10px;font-weight:700;letter-spacing:1px;color:var(--text3);text-transform:uppercase;margin-bottom:12px;}
+.mode-sub .ctrl-row:last-child{margin-bottom:0;}
+
+/* Analysis output */
+.analysis-out{background:var(--s3);border:1px solid var(--border2);border-radius:var(--radius);padding:12px;font-size:12px;min-height:52px;}
+.analysis-desc{color:var(--text2);line-height:1.7;margin-bottom:8px;font-size:12px;font-weight:500;}
+.tag{display:inline-block;padding:3px 7px;border-radius:3px;font-size:11px;margin:2px 2px 2px 0;line-height:1.5;}
+.tag-y{background:rgba(212,255,71,0.1);border:1px solid rgba(212,255,71,0.2);color:#c4ef30;}
+.tag-o{background:rgba(255,107,53,0.1);border:1px solid rgba(255,107,53,0.2);color:var(--accent2);}
+.tag-b{background:var(--blue-dim);border:1px solid rgba(77,166,255,0.2);color:var(--blue);}
+.spinner{display:inline-block;width:10px;height:10px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.timing-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
+.timing-field{display:flex;flex-direction:column;gap:4px;}
+.timing-field label{font-size:11px;font-weight:600;color:var(--text2);}
+.eoc-hint{margin-top:10px;font-size:12px;font-weight:500;color:var(--text2);line-height:1.6;padding:8px 11px;background:var(--s3);border-radius:var(--radius);border-left:2px solid var(--border3);}
+
+/* ── PREVIEW LAYERS (rendered into monitors) ── */
+.kb-layer{position:absolute;inset:0;will-change:transform;}
+.kb-layer img.fill{width:100%;height:100%;object-fit:cover;}
+.blur-bg{position:absolute;inset:-30px;background-size:cover;background-position:center;filter:blur(28px) brightness(0.45);transform:scale(1.15);}
+.blur-fg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;}
+.blur-fg img{max-width:100%;max-height:100%;object-fit:contain;box-shadow:0 10px 50px rgba(0,0,0,0.7);}
+.split-bg-layer{position:absolute;inset:0;background-size:cover;background-position:center;filter:blur(22px) brightness(0.35) saturate(1.4);}
+.split-content{position:absolute;inset:0;display:flex;align-items:center;padding:5%;}
+.split-img-wrap{width:55%;height:85%;flex-shrink:0;overflow:hidden;}
+.split-img-wrap img{width:100%;height:100%;object-fit:cover;}
+.split-text{padding:0 5%;color:#fff;flex:1;}
+.split-text h2{font-family:'Bebas Neue';font-size:clamp(14px,3.5vw,38px);letter-spacing:2px;line-height:1.05;margin-bottom:8px;}
+.split-text p{font-size:clamp(9px,1.3vw,14px);color:rgba(255,255,255,0.6);font-weight:300;line-height:1.7;}
+.vignette{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 35%,rgba(0,0,0,0.65) 100%);pointer-events:none;}
+.lower-third{position:absolute;left:0;right:0;padding:20px 24px 16px;background:linear-gradient(transparent,rgba(0,0,0,0.88));transform:translateY(100%);transition:transform 0.55s cubic-bezier(0.16,1,0.3,1);}
+.lower-third.vis{transform:translateY(0);}
+.lower-third.pos-bottom{bottom:0;}
+.lower-third.pos-lower{bottom:10%;}
+.lt-tag{font-family:'DM Mono';font-size:9px;letter-spacing:3px;text-transform:uppercase;margin-bottom:3px;}
+.lt-title{font-family:'Bebas Neue';font-size:clamp(16px,3.2vw,36px);letter-spacing:2px;line-height:1.1;}
+.lt-sub{font-size:clamp(9px,1.1vw,13px);opacity:0.75;margin-top:2px;font-weight:300;line-height:1.4;}
+.prog-bar{position:absolute;bottom:0;left:0;right:0;height:3px;background:rgba(255,255,255,0.08);}
+.prog-fill{height:100%;background:var(--accent);width:0%;}
+.preview-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text3);}
+.ph-icon{font-size:28px;opacity:0.15;}
+.ph-txt{font-family:'DM Mono';font-size:9px;letter-spacing:3px;opacity:0.25;}
+.playout-badge{position:absolute;top:6px;right:6px;z-index:30;background:rgba(255,68,68,0.9);color:#fff;font-family:'DM Mono';font-size:10px;letter-spacing:2px;padding:2px 6px;border-radius:2px;display:none;}
+.playout-badge.vis{display:block;}
+.pvw-editing-badge{position:absolute;bottom:6px;right:6px;z-index:30;background:rgba(212,255,71,0.12);border:1px solid rgba(212,255,71,0.3);color:var(--accent);font-family:'DM Mono';font-size:10px;letter-spacing:1px;padding:2px 6px;border-radius:2px;display:none;}
+.pvw-editing-badge.vis{display:block;}
+
+/* Playback transitions */
+@keyframes fadeInAnim{from{opacity:0}to{opacity:1}}
+@keyframes fadeOutAnim{from{opacity:1}to{opacity:0}}
+.trans-fade-in{animation:fadeInAnim var(--td,0.8s) ease forwards;}
+.trans-fade-out{animation:fadeOutAnim var(--td,0.8s) ease forwards;}
+@keyframes wipeIn{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0% 0 0)}}
+.trans-wipe-in{animation:wipeIn var(--td,0.8s) ease forwards;}
+@keyframes crossZoomIn{from{transform:scale(1.08);opacity:0}to{transform:scale(1);opacity:1}}
+@keyframes crossZoomOut{from{transform:scale(1);opacity:1}to{transform:scale(0.95);opacity:0}}
+.trans-czoom-in{animation:crossZoomIn var(--td,0.8s) ease forwards;}
+.trans-czoom-out{animation:crossZoomOut var(--td,0.8s) ease forwards;}
+@keyframes dipIn{0%{opacity:0}100%{opacity:1}}
+@keyframes dipOut{0%{opacity:1}50%{opacity:0}100%{opacity:0}}
+.trans-dip-in{animation:dipIn var(--td,0.8s) ease forwards;animation-delay:calc(var(--td,0.8s)/2);opacity:0;}
+.trans-dip-out{animation:dipOut var(--td,0.8s) ease forwards;}
+@keyframes kb-zi{from{transform:scale(1) translate(0,0)}to{transform:scale(var(--ks,1.18)) translate(-2%,-2%)}}
+@keyframes kb-zo{from{transform:scale(var(--ks,1.18)) translate(-3%,-2%)}to{transform:scale(1) translate(0,0)}}
+@keyframes kb-pr{from{transform:scale(var(--ks,1.12)) translate(-4%,0%)}to{transform:scale(var(--ks,1.12)) translate(3%,-1%)}}
+@keyframes kb-pl{from{transform:scale(var(--ks,1.12)) translate(4%,-1%)}to{transform:scale(var(--ks,1.12)) translate(-3%,1%)}}
+@keyframes kb-dr{from{transform:scale(1.06) translate(-1%,-2%)}to{transform:scale(var(--ks,1.14)) translate(2%,1%)}}
+/* Caption on/off pill toggle in section header */
+.caption-toggle-pill{display:flex;align-items:center;gap:0;border-radius:20px;overflow:hidden;border:1px solid var(--border2);flex-shrink:0;margin-left:8px;}
+.caption-toggle-pill button{padding:4px 11px;border:none;background:var(--s3);color:var(--text3);font-family:'Barlow',sans-serif;font-weight:600;font-size:11px;cursor:pointer;transition:all 0.15s;}
+.caption-toggle-pill button:first-child{border-right:1px solid var(--border2);}
+.caption-toggle-pill button.active-on{background:var(--accent-dim);color:var(--accent);}
+.caption-toggle-pill button.active-off{background:var(--red-dim);color:var(--red);}
+
+/* Section status chip — shows current value when collapsed */
+.sec-status{font-family:'DM Mono';font-weight:500;font-size:10px;color:var(--text2);background:var(--s3);border:1px solid var(--border2);padding:3px 8px;border-radius:3px;letter-spacing:0.5px;white-space:nowrap;margin-right:6px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">FRAMEFLOW</div>
+  <div class="logo-sub">VISUAL PLAYBACK</div>
+  <div class="divider"></div>
+  <div id="statusBadge" class="badge badge-idle"><div class="dot dot-grey"></div> IDLE</div>
+  <div class="header-right">
+    <span id="playoutStatus" style="font-family:'DM Mono';font-size:10px;color:var(--text3);letter-spacing:1px;">open frameflow-playout.html in OBS/vMix</span>
+    <button class="btn-sm" onclick="pingPlayout()">⟳ PING</button>
+    <div class="divider"></div>
+    <button class="btn-playout" onclick="openPlayout()">⬛ OPEN PLAYOUT</button>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- LEFT: CUE LIST -->
+  <div class="panel panel-left">
+    <div class="sec">
+      <div class="sec-label">
+        Load Media
+        <span style="display:flex;gap:5px;">
+          <button class="cue-act-btn" style="opacity:1;padding:2px 8px;font-size:8px;" onclick="addEmptyGroup()">+ Group</button>
+          <button class="cue-act-btn" style="opacity:1;color:var(--text3);" onclick="clearCues()">Clear</button>
+        </span>
+      </div>
+      <div class="upload-zone" id="uploadZone">
+        <input type="file" id="fileInput" accept="image/*" multiple>
+        <div style="font-size:16px;margin-bottom:3px;">⬆</div>
+        <p><strong>Drop images here</strong> or click to browse</p>
+        <p>Multiple → auto-group · Single → standalone</p>
+      </div>
+    </div>
+    <div class="sec" style="padding:6px 14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-family:'DM Mono';font-size:9px;color:var(--text3);letter-spacing:2px;">CUE LIST</span>
+        <span class="cue-counter">CUE <b id="cueCounter">—</b> / <b id="cueTotalDisplay">0</b></span>
+      </div>
+    </div>
+    <div class="sec-overflow">
+      <ul class="cue-list" id="cueList">
+        <li class="empty-msg">Load images or create a group to start</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- CENTER: DUAL MONITORS -->
+  <div class="monitor-area">
+    <!-- Toolbar -->
+    <div class="monitor-toolbar">
+      <div class="aspect-btns">
+        <button class="asp-btn active" data-asp="16:9">16:9</button>
+        <button class="asp-btn" data-asp="9:16">9:16</button>
+        <button class="asp-btn" data-asp="1:1">1:1</button>
+      </div>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+      </div>
+    </div>
+
+    <!-- Dual monitors -->
+    <div class="dual-monitors" id="dualMonitors">
+      <!-- PREVIEW (left) -->
+      <div class="monitor-col preview-col">
+        <div class="monitor-header">
+          <span class="monitor-label">PREVIEW</span>
+          <span id="pvwCueName" style="font-family:'DM Mono';font-size:8px;color:var(--text2);margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">—</span>
+          <button class="pvw-play-btn" id="pvwPlayBtn" onclick="togglePvwPlay()" title="Play preview motion (independent of program)">▶ PLAY</button>
+        </div>
+        <div class="monitor-stage preview-stage">
+          <div class="preview-wrap pvw-wrap" id="pvwWrap" data-asp="16:9">
+            <div class="preview-placeholder" id="pvwPlaceholder"><div class="ph-icon">◫</div><div class="ph-txt">PREVIEW</div></div>
+            <div class="monitor-overlay-label pvw-label">PVW</div>
+            <div class="pvw-editing-badge" id="pvwEditingBadge">EDITING</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SPLITTER -->
+      <div class="monitor-splitter" id="monitorSplitter"></div>
+
+      <!-- PROGRAM (right) -->
+      <div class="monitor-col">
+        <div class="monitor-header">
+          <span class="monitor-label pgm">● PROGRAM</span>
+          <span id="pgmCueName" style="font-family:'DM Mono';font-size:8px;color:var(--text2);margin-left:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">—</span>
+        </div>
+        <div class="monitor-stage program-stage">
+          <div class="preview-wrap pgm-wrap" id="pgmWrap" data-asp="16:9">
+            <div class="preview-placeholder" id="pgmPlaceholder"><div class="ph-icon">◫</div><div class="ph-txt">AWAITING CUE</div></div>
+            <div class="monitor-overlay-label pgm-label">PGM</div>
+            <div class="playout-badge" id="playoutBadge">● PLAYOUT</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transport -->
+    <div class="transport">
+
+      <!-- CUE NAVIGATION -->
+      <div class="t-zone t-zone-nav">
+        <button class="nav-btn" onclick="prevCue()" title="Previous cue">⏮</button>
+        <button class="nav-btn" onclick="nextCue()" title="Next cue">⏭</button>
+      </div>
+
+      <div class="t-zone-sep"></div>
+
+      <!-- CUE COUNTER -->
+      <div class="t-zone t-zone-counter">
+        <span class="t-counter-label">CUE</span>
+        <span class="t-counter-val" id="cueCounter"><b>01</b></span>
+      </div>
+
+      <div class="t-zone-sep"></div>
+
+      <!-- PROGRESS + LOOP -->
+      <div class="t-zone t-zone-progress">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="progress-track" style="flex:1;"><div class="progress-fill" id="progressFill"></div></div>
+          <button class="t-loop-btn" id="autoBtn" onclick="toggleAuto()">⟳ LOOP OFF</button>
+        </div>
+        <div class="progress-labels"><span id="timeElapsed">0:00</span><span id="timeRemain">—</span></div>
+      </div>
+
+      <div class="t-zone-sep"></div>
+
+      <!-- PROGRAM CONTROLS -->
+      <div class="t-zone t-zone-pgm">
+        <button class="pgm-btn fade-btn" id="fadeOutBtn" onclick="fadeOutProgram()" title="Fade program to black">
+          ↓ FADE
+        </button>
+        <button class="pgm-btn cut-btn" id="clearBtn" onclick="clearProgram()" title="Cut program to black">
+          ✕ CLEAR
+        </button>
+      </div>
+
+      <div class="t-zone-sep"></div>
+
+      <!-- TAKE LIVE -->
+      <div class="t-zone t-zone-take">
+        <button class="take-btn" id="takeBtn" onclick="takeLive()" title="Take previewed cue to program">
+          TAKE LIVE
+          <span class="take-key">SPACE</span>
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- RIGHT: SETTINGS (for selected/previewed cue) -->
+  <div class="panel panel-right">
+    <div class="settings-scroll">
+
+      <!-- AI Analysis — always visible, no collapse -->
+      <div class="sec">
+        <div class="sec-label">AI Analysis</div>
+        <div class="analysis-out" id="analysisOut"><span style="color:var(--text3);font-size:10px;">Select a cue to begin...</span></div>
+      </div>
+
+      <!-- PLAYBACK MODE -->
+      <div class="coll-sec">
+        <div class="coll-hdr open" onclick="toggleSec(this)">
+          <div class="sec-label">Playback Mode</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="sec-status" id="modeStatus">Full Screen</span>
+            <span class="coll-chevron">▶</span>
+          </div>
+        </div>
+        <div class="coll-body open">
+          <div class="mode-cards-mini">
+            <div class="mode-mini sel" data-mode="fullscreen"><div class="mode-mini-title">Full Screen</div><div class="mode-mini-desc">Fills frame — max impact</div></div>
+            <div class="mode-mini" data-mode="blurbg"><div class="mode-mini-title">Blur Background</div><div class="mode-mini-desc">Subject centred, blurred fill</div></div>
+            <div class="mode-mini" data-mode="split"><div class="mode-mini-title">Editorial Split</div><div class="mode-mini-desc">Image + caption / broadcast look</div></div>
+          </div>
+
+          <!-- Fullscreen options -->
+          <div class="mode-sub active" id="modeSubFullscreen">
+            <div class="mode-sub-lbl">FULLSCREEN OPTIONS</div>
+            <div class="ctrl-row">
+              <div class="ctrl-label">Vignette Overlay <em id="vignetteLabel">Off</em></div>
+              <div class="sel-row-2" style="margin-top:4px;">
+                <button class="sel-btn on-b" id="vigOff" onclick="setVignette(false)">OFF</button>
+                <button class="sel-btn" id="vigOn" onclick="setVignette(true)">ON</button>
+              </div>
+            </div>
+            <div class="ctrl-row" style="margin-bottom:0;">
+              <div class="ctrl-label">Object Fit <em id="fsFitLabel">Cover</em></div>
+              <div class="sel-row-2" style="margin-top:4px;">
+                <button class="sel-btn on-b" id="fsCover" onclick="setFsFit('cover')">COVER</button>
+                <button class="sel-btn" id="fsContain" onclick="setFsFit('contain')">CONTAIN</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Blur background options -->
+          <div class="mode-sub" id="modeSubBlurbg">
+            <div class="mode-sub-lbl">BLUR BACKGROUND OPTIONS</div>
+            <div class="ctrl-row">
+              <div class="ctrl-label">Blur Amount <em id="blurAmtLabel">28px</em></div>
+              <input type="range" id="blurAmt" min="4" max="60" value="28" oninput="updateModeOpts()">
+            </div>
+            <div class="ctrl-row" style="margin-bottom:0;">
+              <div class="ctrl-label">BG Brightness <em id="bgBrightLabel">45%</em></div>
+              <input type="range" id="bgBright" min="5" max="90" value="45" oninput="updateModeOpts()">
+            </div>
+          </div>
+
+          <!-- Split layout options -->
+          <div class="mode-sub" id="modeSubSplit">
+            <div class="mode-sub-lbl">SPLIT LAYOUT OPTIONS</div>
+            <div class="ctrl-row">
+              <div class="ctrl-label">Image Width <em id="splitImgWLabel">55%</em></div>
+              <input type="range" id="splitImgW" min="30" max="70" value="55" oninput="updateModeOpts()">
+            </div>
+            <div class="ctrl-row" style="margin-bottom:0;">
+              <div class="ctrl-label">Text Align</div>
+              <div class="sel-row-3" style="margin-top:4px;">
+                <button class="sel-btn on-b" id="splitAlLeft" onclick="setSplitAlign('left')">LEFT</button>
+                <button class="sel-btn" id="splitAlCenter" onclick="setSplitAlign('center')">CTR</button>
+                <button class="sel-btn" id="splitAlRight" onclick="setSplitAlign('right')">RIGHT</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TIMING -->
+      <div class="coll-sec">
+        <div class="coll-hdr" onclick="toggleSec(this)">
+          <div class="sec-label">Timing</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="sec-status" id="timingStatus">8s · FADE 0</span>
+            <span class="coll-chevron">▶</span>
+          </div>
+        </div>
+        <div class="coll-body">
+          <div class="ctrl-row">
+            <div class="ctrl-label">Hold Duration <em id="durLabel">8s</em></div>
+            <input type="range" id="durRange" min="2" max="60" value="8" oninput="updateDur()">
+          </div>
+          <div class="timing-row">
+            <div class="timing-field">
+              <label>FADE IN (s)</label>
+              <input type="number" id="fadeInDur" min="0" max="10" step="0.1" value="0" oninput="updateFadeTimes()">
+            </div>
+            <div class="timing-field">
+              <label>FADE OUT (s)</label>
+              <input type="number" id="fadeOutDur" min="0" max="10" step="0.1" value="0" oninput="updateFadeTimes()">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- END OF CUE -->
+      <div class="coll-sec">
+        <div class="coll-hdr" onclick="toggleSec(this)">
+          <div class="sec-label">End of Cue</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="sec-status" id="eocStatus">HOLD</span>
+            <span class="coll-chevron">▶</span>
+          </div>
+        </div>
+        <div class="coll-body">
+          <div class="sel-row-3">
+            <button class="sel-btn on-b" id="eocHold" onclick="setEOC('hold')">HOLD</button>
+            <button class="sel-btn" id="eocFade" onclick="setEOC('fade')">FADE OUT</button>
+            <button class="sel-btn" id="eocClear" onclick="setEOC('clear')">CLEAR</button>
+          </div>
+          <div class="eoc-hint" id="eocHint">Hold: last frame stays on screen</div>
+        </div>
+      </div>
+
+      <!-- KEN BURNS MOTION -->
+      <!-- MOTION -->
+      <div class="coll-sec">
+        <div class="coll-hdr" onclick="toggleSec(this)">
+          <div class="sec-label">Motion</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="sec-status" id="kbStatus">Auto (AI)</span>
+            <span class="coll-chevron">▶</span>
+          </div>
+        </div>
+        <div class="coll-body">
+          <div class="ctrl-row">
+            <div class="ctrl-label" style="display:none"><em id="kbDirLabel">Auto (AI)</em></div>
+            <div class="kb-grid">
+              <button class="kb-btn kbauto active" data-kb="auto" onclick="setKB(this,'auto')">AUTO</button>
+              <button class="kb-btn" data-kb="zoom-in" onclick="setKB(this,'zoom-in')">ZOOM IN</button>
+              <button class="kb-btn" data-kb="zoom-out" onclick="setKB(this,'zoom-out')">ZOOM OUT</button>
+              <button class="kb-btn" data-kb="pan-right" onclick="setKB(this,'pan-right')">PAN →</button>
+              <button class="kb-btn" data-kb="pan-left" onclick="setKB(this,'pan-left')">← PAN</button>
+              <button class="kb-btn" data-kb="drift" onclick="setKB(this,'drift')">DRIFT</button>
+              <button class="kb-btn custom-pan" data-kb="custom" onclick="setKB(this,'custom')" style="grid-column:span 3">✦ CUSTOM — set start &amp; end points</button>
+            </div>
+          </div>
+
+          <div id="kbPointEditor">
+            <div style="font-family:'DM Mono';font-size:9px;color:var(--text3);margin-bottom:6px;line-height:1.5;">Drag boxes to set start &amp; end crop.<br>Resize from bottom-right corner.</div>
+            <div class="kb-point-wrap" id="kbPointWrap">
+              <img id="kbPointImg" src="" alt="">
+              <svg id="kbArrowSvg" xmlns="http://www.w3.org/2000/svg">
+                <defs><marker id="kbArrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="rgba(255,255,255,0.3)"/></marker></defs>
+                <line id="kbArrowLine" x1="0" y1="0" x2="0" y2="0"/>
+              </svg>
+            </div>
+            <div class="kb-info-row">
+              <span>S: <em id="kbInfoStart">—</em></span>
+              <span>E: <em id="kbInfoEnd">—</em></span>
+              <span style="margin-left:auto"><em id="kbCustomInfo">—</em></span>
+            </div>
+            <div class="kb-point-legend" style="margin-top:4px;">
+              <div class="kb-legend-item"><div class="kb-legend-dot" style="background:var(--accent)"></div>Start</div>
+              <div class="kb-legend-item"><div class="kb-legend-dot" style="background:var(--blue)"></div>End</div>
+              <div class="kb-legend-item" style="margin-left:auto;color:var(--text3);font-size:7px;">drag · resize corner</div>
+            </div>
+            <div class="kb-point-actions">
+              <button class="kb-point-btn" onclick="swapKBPoints()">⇄ Swap</button>
+              <button class="kb-point-btn" onclick="resetKBPoints()">↺ Reset</button>
+              <button class="kb-point-btn" onclick="previewKBCustom()" style="border-color:var(--accent);color:var(--accent)">▶ Preview</button>
+            </div>
+          </div>
+
+          <!-- Advanced motion settings — collapsed by default -->
+          <div style="margin-top:10px;">
+            <button class="adv-toggle" id="motionAdvBtn" onclick="toggleMotionAdv()">Advanced ›</button>
+            <div id="motionAdv" style="display:none;margin-top:10px;">
+              <div class="ctrl-row">
+                <div class="ctrl-label">Zoom Scale <em id="zoomLabel">Medium</em></div>
+                <input type="range" id="zoomScale" min="1" max="5" value="3" oninput="updateZoom()">
+              </div>
+              <div class="ctrl-row" style="margin-bottom:0;">
+                <div class="ctrl-label">Speed <em id="speedLabel">Normal</em></div>
+                <input type="range" id="motionSpeed" min="1" max="5" value="3" oninput="updateSpeed()">
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TRANSITION -->
+      <div class="coll-sec">
+        <div class="coll-hdr" onclick="toggleSec(this)">
+          <div class="sec-label">Transition</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span class="sec-status" id="transStatus">FADE · 0.8s</span>
+            <span class="coll-chevron">▶</span>
+          </div>
+        </div>
+        <div class="coll-body">
+          <div class="ctrl-row">
+            <div class="trans-grid">
+              <button class="trans-opt active" data-tr="fade" onclick="setTrans(this,'fade')">FADE</button>
+              <button class="trans-opt" data-tr="wipe" onclick="setTrans(this,'wipe')">WIPE</button>
+              <button class="trans-opt" data-tr="czoom" onclick="setTrans(this,'czoom')">X·ZOOM</button>
+              <button class="trans-opt" data-tr="dip" onclick="setTrans(this,'dip')">DIP·BLK</button>
+              <button class="trans-opt" data-tr="cut" onclick="setTrans(this,'cut')">CUT</button>
+            </div>
+          </div>
+          <div class="ctrl-row" style="margin-top:8px;margin-bottom:0;">
+            <div class="ctrl-label">Duration <em id="transDurLabel">0.8s</em></div>
+            <input type="range" id="transDur" min="1" max="20" value="8" oninput="updateTransDur()">
+          </div>
+        </div>
+      </div>
+
+      <!-- CAPTION / LOWER THIRD -->
+      <div class="coll-sec">
+        <div class="coll-hdr" onclick="toggleSec(this)">
+          <div class="sec-label">Caption</div>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <div class="caption-toggle-pill" onclick="event.stopPropagation()">
+              <button id="captionOnBtn" onclick="setCaptionEnabled(true)">ON</button>
+              <button id="captionOffBtn" class="active-off" onclick="setCaptionEnabled(false)">OFF</button>
+            </div>
+            <span class="coll-chevron">▶</span>
+          </div>
+        </div>
+        <div class="coll-body">
+          <div class="caption-field">
+            <label>TITLE TEXT</label>
+            <input type="text" id="captionTitleInput" placeholder="Leave blank to use AI caption…" oninput="updateCaptionText()">
+          </div>
+          <div class="caption-field">
+            <label>SUBTITLE</label>
+            <input type="text" id="captionSubInput" placeholder="Optional second line…" oninput="updateCaptionText()">
+          </div>
+          <div class="caption-field" style="margin-bottom:0;">
+            <label>TAG LINE</label>
+            <input type="text" id="captionTagInput" placeholder="e.g. LIVE · BREAKING · REPORT" oninput="updateCaptionText()">
+          </div>
+
+          <div style="display:flex;align-items:center;gap:8px;margin-top:12px;margin-bottom:10px;">
+            <span style="font-family:'DM Mono';font-size:9px;color:var(--text2);letter-spacing:1px;flex-shrink:0;">POSITION</span>
+            <div class="sel-row-2" style="flex:1;">
+              <button class="caption-pos-btn" data-pos="bottom" onclick="setCaptionPos(this,'bottom')">BOTTOM</button>
+              <button class="caption-pos-btn" data-pos="lower" onclick="setCaptionPos(this,'lower')">LOWER</button>
+            </div>
+          </div>
+
+          <div class="sec-label" style="margin-bottom:6px;">Style</div>
+          <div class="caption-color-row">
+            <div class="caption-color-item">
+              <label>TEXT</label>
+              <input type="color" id="ltTextColor" value="#ffffff" oninput="updateCaptionStyle()">
+            </div>
+            <div class="caption-color-item">
+              <label>ACCENT</label>
+              <input type="color" id="ltAccentColor" value="#d4ff47" oninput="updateCaptionStyle()">
+            </div>
+            <div class="caption-color-item">
+              <label>BG</label>
+              <input type="color" id="ltBgColor" value="#000000" oninput="updateCaptionStyle()">
+            </div>
+          </div>
+          <div class="caption-opacity-row">
+            <label>OPACITY</label>
+            <input type="range" id="ltBgOpacity" min="0" max="100" value="75" oninput="updateCaptionStyle()">
+            <span id="ltBgOpacityVal" style="font-family:'DM Mono';font-size:9px;color:var(--text2);min-width:28px;">75%</span>
+          </div>
+
+          <!-- Live preview bar -->
+          <div class="caption-preview-bar" id="captionPreviewBar" style="margin-top:12px;">
+            <div class="cpb-bg" id="cpbBg"></div>
+            <div class="cpb-text">
+              <div class="cpb-tag" id="cpbTag"></div>
+              <div class="cpb-title" id="cpbTitle">Caption Preview</div>
+              <div class="cpb-sub" id="cpbSub" style="font-size:9px;opacity:0.7;margin-top:1px;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ═══════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════
+let cues = [];
+let groups = [];
+let cueItems = [];
+let programCueItemIdx = -1;   // what's ON AIR
+let programGroupImageIdx = -1;
+let previewCueId = null;       // which cue is loaded in preview (independent)
+let isPlaying = false;
+let autoAdvance = false;
+
+// Global defaults
+let selectedMode = 'fullscreen';
+let kbDirection = 'auto';
+let transitionType = 'fade';
+let transDuration = 0.8;
+let holdDuration = 8;
+let fadeInDur = 0;
+let fadeOutDur = 0;
+let endOfCueBehavior = 'hold';
+let zoomScale = 3;
+let motionSpeed = 3;
+
+// Per-mode options (global defaults, sent to playout)
+let modeOpts = {
+  fullscreen: { vignette: false, objectFit: 'cover' },
+  blurbg:     { blurAmount: 28, bgBrightness: 0.45 },
+  split:      { splitImgWidth: 55, splitTextAlign: 'left' }
+};
+
+// Caption style (global, applies to all cues unless overridden)
+let captionStyle = {
+  textColor: '#ffffff',
+  accentColor: '#d4ff47',
+  bgColor: '#000000',
+  bgOpacity: 75,
+  position: 'off'  // bottom | lower | off
+};
+
+let playbackTimer = null;
+let fadeOutTimer = null;
+let progressRAF = null;
+let playStartTime = null;
+let playoutWindow = null;
+let nextCueId = 1;
+let nextGroupId = 1;
+
+// BroadcastChannel
+const playoutChannel = new BroadcastChannel('frameflow_playout_v1');
+playoutChannel.onmessage = e => {
+  if (e.data.type === 'pong') {
+    document.getElementById('playoutStatus').textContent = '● PLAYOUT CONNECTED';
+    document.getElementById('playoutStatus').style.color = 'var(--green)';
+  }
+};
+
+// ═══════════════════════════════════════════════
+//  HELPERS
+// ═══════════════════════════════════════════════
+const getCue = id => cues.find(c => c.id === id);
+const getGroup = id => groups.find(g => g.id === id);
+
+function rebuildCueItems() {
+  cueItems = [];
+  const seen = new Set();
+  cues.forEach(c => {
+    if (c.groupId) {
+      if (!seen.has(c.groupId)) { seen.add(c.groupId); cueItems.push({ type: 'group', id: c.groupId }); }
+    } else {
+      cueItems.push({ type: 'single', id: c.id });
+    }
+  });
+  groups.forEach(g => { if (!seen.has(g.id)) cueItems.push({ type: 'group', id: g.id }); });
+  document.getElementById('cueTotalDisplay').textContent = cueItems.length;
+}
+
+function getFirstCueOfItem(item) {
+  if (!item) return null;
+  if (item.type === 'single') return getCue(item.id);
+  const g = getGroup(item.id);
+  return (g && g.cueIds.length) ? getCue(g.cueIds[0]) : null;
+}
+
+function getCueEOC(cue) { return (cue && cue.eoc) ? cue.eoc : endOfCueBehavior; }
+function getCueFadeIn(cue) { return (cue && cue.fadeIn != null) ? cue.fadeIn : fadeInDur; }
+function getCueFadeOut(cue) { return (cue && cue.fadeOut != null) ? cue.fadeOut : fadeOutDur; }
+function getCueHoldDuration(cue) { return (cue && cue.holdDuration != null) ? cue.holdDuration : holdDuration; }
+function getCueTransitionType(cue) { return (cue && cue.transitionType) ? cue.transitionType : transitionType; }
+function getCueTransDuration(cue) { return (cue && cue.transDuration != null) ? cue.transDuration : transDuration; }
+function getCueZoomScale(cue) { return (cue && cue.zoomScale != null) ? cue.zoomScale : zoomScale; }
+function getCueMotionSpeed(cue) { return (cue && cue.motionSpeed != null) ? cue.motionSpeed : motionSpeed; }
+function getCueModeOpts(cue) { return (cue && cue.modeOpts) ? cue.modeOpts : modeOpts; }
+function getCueCaptionStyle(cue) { return (cue && cue.captionStyle) ? cue.captionStyle : captionStyle; }
+
+// Ensure a cue has its own deep-copied modeOpts (called before modifying)
+function ensureCueModeOpts(cue) {
+  if (!cue.modeOpts) cue.modeOpts = JSON.parse(JSON.stringify(modeOpts));
+}
+// Ensure a cue has its own deep-copied captionStyle
+function ensureCueCaptionStyle(cue) {
+  if (!cue.captionStyle) cue.captionStyle = JSON.parse(JSON.stringify(captionStyle));
+}
+
+// Caption text for a cue — custom overrides AI
+function getCaptionTitle(cue) { return cue.captionTitle || cue.analysis?.caption || ''; }
+function getCaptionSub(cue) { return cue.captionSub || ''; }
+function getCaptionTag(cue) { return cue.captionTag || (cue.analysis?.mood ? cue.analysis.mood.toUpperCase() : 'FRAMEFLOW'); }
+
+// ═══════════════════════════════════════════════
+//  UPLOAD
+// ═══════════════════════════════════════════════
+const uploadZone = document.getElementById('uploadZone');
+const fileInput = document.getElementById('fileInput');
+uploadZone.addEventListener('click', e => { if (!e.target.closest('button,.cue-act-btn')) fileInput.click(); });
+uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag'));
+uploadZone.addEventListener('drop', e => { e.preventDefault(); uploadZone.classList.remove('drag'); handleFiles([...e.dataTransfer.files], null); });
+fileInput.addEventListener('change', e => { handleFiles([...e.target.files], null); e.target.value = ''; });
+
+function handleFiles(files, targetGroupId) {
+  const imgs = files.filter(f => f.type.startsWith('image/'));
+  if (!imgs.length) return;
+  let gid = targetGroupId;
+  if (!gid && imgs.length > 1) {
+    gid = nextGroupId++;
+    const ts = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    groups.push({ id: gid, name: `Group ${groups.length + 1} · ${ts}`, cueIds: [], collapsed: false });
+  }
+  imgs.forEach(f => {
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const cue = {
+        id: nextCueId++, src: ev.target.result,
+        name: f.name.replace(/\.[^.]+$/, ''),
+        analysis: null, mode: null, kbAnim: null, groupId: gid || null,
+        eoc: null, fadeIn: null, fadeOut: null,
+        captionTitle: '', captionSub: '', captionTag: '',
+        kbCustomStart: null, kbCustomEnd: null,
+        // Per-cue settings (null = use global default)
+        holdDuration: null,
+        transitionType: null,
+        transDuration: null,
+        zoomScale: null,
+        motionSpeed: null,
+        modeOpts: null,  // deep-copied from global when first changed
+        captionStyle: null  // deep-copied from global when first changed
+      };
+      cues.push(cue);
+      if (gid) { const g = getGroup(gid); if (g && !g.cueIds.includes(cue.id)) g.cueIds.push(cue.id); }
+      rebuildCueItems(); renderCueList();
+      if (cues.length === 1) loadPreviewCue(cue.id);
+      analyzeImage(cue);
+    };
+    reader.readAsDataURL(f);
+  });
+}
+
+function addEmptyGroup() {
+  const name = prompt('Group name:', `Group ${groups.length + 1}`);
+  if (!name) return;
+  groups.push({ id: nextGroupId++, name, cueIds: [], collapsed: false });
+  rebuildCueItems(); renderCueList();
+}
+
+// ═══════════════════════════════════════════════
+//  CUE LIST RENDER
+// ═══════════════════════════════════════════════
+function renderCueList() {
+  const ul = document.getElementById('cueList');
+  if (!cueItems.length) { ul.innerHTML = '<li class="empty-msg">Load images or create a group to start</li>'; return; }
+  ul.innerHTML = '';
+  cueItems.forEach((item, idx) => {
+    if (item.type === 'single') {
+      const cue = getCue(item.id);
+      if (cue) ul.appendChild(makeSingleRow(cue, idx, false, null));
+    } else {
+      ul.appendChild(makeGroupSection(item.id, idx));
+    }
+  });
+  document.getElementById('cueCounter').textContent = programCueItemIdx >= 0 ? String(programCueItemIdx + 1).padStart(2, '0') : '—';
+}
+
+function rowStateClass(cueId, itemIdx) {
+  const isPgm = isPlaying && programCueItemIdx === itemIdx;
+  const isPvw = previewCueId === cueId;
+  if (isPgm) return ' program';
+  if (isPvw) return ' preview';
+  return '';
+}
+
+function makeSingleRow(cue, idx, isChild, parentGroupId) {
+  const li = document.createElement(isChild ? 'div' : 'li');
+  const state = rowStateClass(cue.id, idx);
+  li.className = (isChild ? 'group-child' : 'cue-item') + state;
+  li.dataset.cueId = cue.id;
+
+  // Check if this child is actually the program cue (during group playback)
+  if (isChild && isPlaying) {
+    const pgmItem = cueItems[programCueItemIdx];
+    if (pgmItem && pgmItem.type === 'group') {
+      const g = getGroup(pgmItem.id);
+      if (g && g.cueIds[programGroupImageIdx] === cue.id) li.classList.add('program');
+    }
+  }
+
+  const mode = cue.mode || selectedMode;
+  const mb = mode === 'fullscreen' ? 'mode-full' : mode === 'blurbg' ? 'mode-blur' : 'mode-split';
+  const ml = mode === 'fullscreen' ? 'FULL' : mode === 'blurbg' ? 'BLUR' : 'SPLIT';
+  const eoc = getCueEOC(cue);
+  const eb = 'eoc-' + eoc;
+  const fi = getCueFadeIn(cue);
+  const fo = getCueFadeOut(cue);
+  const displayName = cue.captionTitle || cue.name;
+
+  li.innerHTML = `
+    ${!isChild ? `<span class="cue-num">${String(idx + 1).padStart(2, '0')}</span>` : ''}
+    <img class="cue-thumb" src="${cue.src}" alt="">
+    <div class="cue-info">
+      <div class="cue-name">${displayName}</div>
+      <div class="cue-meta">
+        <span class="cue-mode-badge ${mb}">${ml}</span>
+        <span class="eoc-badge ${eb}">${eoc.toUpperCase()}</span>
+        ${fi > 0 ? `<span style="color:var(--accent)">IN:${fi}s</span>` : ''}
+        ${fo > 0 ? `<span style="color:var(--accent2)">OUT:${fo}s</span>` : ''}
+        ${!cue.analysis ? '<span style="color:var(--accent2)">●</span>' : ''}
+      </div>
+    </div>
+    <div class="cue-actions">
+      ${isChild && parentGroupId ? `<button class="cue-act-btn" onclick="ejectFromGroup(${cue.id},${parentGroupId},event)">eject</button>` : ''}
+      <button class="cue-act-btn del" onclick="deleteCueById(${cue.id},event)">✕</button>
+    </div>`;
+
+  li.addEventListener('click', e => {
+    if (e.target.closest('.cue-actions') || e.defaultPrevented) return;
+    loadPreviewCue(cue.id);
+  });
+  return li;
+}
+
+function makeGroupSection(groupId, idx) {
+  const g = getGroup(groupId);
+  if (!g) return document.createTextNode('');
+  const isProgram = isPlaying && programCueItemIdx === idx;
+  const progress = isProgram && programGroupImageIdx >= 0 ? `${programGroupImageIdx + 1}/${g.cueIds.length} ▶` : `${g.cueIds.length} img`;
+  const firstThumb = g.cueIds.length ? `<img class="cue-thumb" src="${getCue(g.cueIds[0])?.src || ''}" style="border-color:var(--accent2)" alt="">` : '<div class="cue-thumb-ph"></div>';
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'group-section';
+
+  const header = document.createElement('li');
+  header.className = 'group-row' + (isProgram ? ' program' : '') + (!g.collapsed ? ' open' : '');
+  header.innerHTML = `
+    <span class="cue-num">${String(idx + 1).padStart(2, '0')}</span>
+    <span class="grp-chevron">▶</span>
+    ${firstThumb}
+    <div class="cue-info">
+      <div class="cue-name" style="color:var(--accent2)">${g.name}</div>
+      <div class="cue-meta">
+        <span style="color:var(--accent2)">GROUP</span>
+        <span>${progress}</span>
+        ${isProgram ? '<span style="color:var(--red)">● ON AIR</span>' : ''}
+      </div>
+    </div>
+    <div class="cue-actions">
+      <button class="cue-act-btn del" onclick="deleteGroupById(${groupId},event)">✕</button>
+    </div>`;
+
+  header.addEventListener('click', e => {
+    if (e.target.closest('.cue-actions') || e.defaultPrevented) return;
+    const firstCue = g.cueIds.length ? getCue(g.cueIds[0]) : null;
+    if (firstCue) loadPreviewCue(firstCue.id);
+    // Toggle collapse
+    g.collapsed = !g.collapsed;
+    renderCueList();
+  });
+  wrapper.appendChild(header);
+
+  if (!g.collapsed) {
+    g.cueIds.forEach(cid => {
+      const cue = getCue(cid);
+      if (cue) wrapper.appendChild(makeSingleRow(cue, idx, true, groupId));
+    });
+    const addRow = document.createElement('div');
+    addRow.className = 'group-add-row';
+    addRow.innerHTML = `<input type="file" accept="image/*" multiple><span>＋ add images to this group</span>`;
+    addRow.addEventListener('click', () => addRow.querySelector('input').click());
+    addRow.querySelector('input').addEventListener('change', e => { handleFiles([...e.target.files], groupId); e.target.value = ''; });
+    wrapper.appendChild(addRow);
+  }
+  return wrapper;
+}
+
+// ═══════════════════════════════════════════════
+//  PREVIEW (independent from program)
+// ═══════════════════════════════════════════════
+function loadPreviewCue(cueId) {
+  const cue = getCue(cueId);
+  if (!cue) return;
+  previewCueId = cueId;
+
+  // Update right panel
+  if (cue.mode) setModeUI(cue.mode);
+  if (cue.kbAnim) setKBUI(cue.kbAnim);
+  syncSettingsPanel(cue);
+  if (cue.analysis) renderAnalysis(cue.analysis);
+  else document.getElementById('analysisOut').innerHTML = '<div style="color:var(--text3);font-size:10px;display:flex;align-items:center;gap:6px;"><div class="spinner"></div> Analyzing...</div>';
+
+  // Render into preview monitor
+  renderIntoMonitor('pvw', cue, false);
+  document.getElementById('pvwCueName').textContent = cue.captionTitle || cue.name;
+  document.getElementById('pvwEditingBadge').classList.add('vis');
+  renderCueList();
+}
+
+function syncSettingsPanel(cue) {
+  // Timing
+  const cueHold = getCueHoldDuration(cue);
+  document.getElementById('durRange').value = cueHold;
+  document.getElementById('durLabel').textContent = cueHold + 's';
+  document.getElementById('fadeInDur').value = getCueFadeIn(cue);
+  document.getElementById('fadeOutDur').value = getCueFadeOut(cue);
+  updateEOCUI(getCueEOC(cue));
+
+  // Transition
+  const cueTr = getCueTransitionType(cue);
+  const cueTrDur = getCueTransDuration(cue);
+  transitionType = cueTr;
+  transDuration = cueTrDur;
+  document.querySelectorAll('.trans-opt').forEach(b => b.classList.toggle('active', b.dataset.tr === cueTr));
+  document.getElementById('transDur').value = Math.round(cueTrDur * 10);
+  document.getElementById('transDurLabel').textContent = cueTrDur.toFixed(1) + 's';
+  document.getElementById('transStatus').textContent = cueTr.toUpperCase() + ' · ' + cueTrDur.toFixed(1) + 's';
+
+  // Motion advanced
+  const cueZoom = getCueZoomScale(cue);
+  const cueSpeed = getCueMotionSpeed(cue);
+  zoomScale = cueZoom; motionSpeed = cueSpeed;
+  document.getElementById('zoomScale').value = cueZoom;
+  document.getElementById('speedLabel').textContent = ['Very Slow','Slow','Normal','Fast','Snap'][cueSpeed - 1];
+  document.getElementById('zoomLabel').textContent = ['Minimal','Subtle','Medium','Strong','Dramatic'][cueZoom - 1];
+  document.getElementById('motionSpeed').value = cueSpeed;
+
+  // Mode options
+  const cmo = getCueModeOpts(cue);
+  // Fullscreen opts
+  const vig = cmo.fullscreen.vignette;
+  document.getElementById('vigOff').className = 'sel-btn' + (!vig ? ' on-b' : '');
+  document.getElementById('vigOn').className  = 'sel-btn' + (vig  ? ' on-b' : '');
+  document.getElementById('vignetteLabel').textContent = vig ? 'On' : 'Off';
+  const fit = cmo.fullscreen.objectFit;
+  document.getElementById('fsCover').className   = 'sel-btn' + (fit === 'cover'   ? ' on-b' : '');
+  document.getElementById('fsContain').className = 'sel-btn' + (fit === 'contain' ? ' on-b' : '');
+  document.getElementById('fsFitLabel').textContent = fit.charAt(0).toUpperCase() + fit.slice(1);
+  // Blur opts
+  document.getElementById('blurAmt').value = cmo.blurbg.blurAmount;
+  document.getElementById('blurAmtLabel').textContent = cmo.blurbg.blurAmount + 'px';
+  document.getElementById('bgBright').value = Math.round(cmo.blurbg.bgBrightness * 100);
+  document.getElementById('bgBrightLabel').textContent = Math.round(cmo.blurbg.bgBrightness * 100) + '%';
+  // Split opts
+  document.getElementById('splitImgW').value = cmo.split.splitImgWidth;
+  document.getElementById('splitImgWLabel').textContent = cmo.split.splitImgWidth + '%';
+  const sa = cmo.split.splitTextAlign;
+  ['Left','Center','Right'].forEach(a => {
+    document.getElementById('splitAl' + a).className = 'sel-btn' + (sa === a.toLowerCase() ? ' on-b' : '');
+  });
+
+  // Caption style
+  const ccs = getCueCaptionStyle(cue);
+  captionStyle.textColor = ccs.textColor;
+  captionStyle.accentColor = ccs.accentColor;
+  captionStyle.bgColor = ccs.bgColor;
+  captionStyle.bgOpacity = ccs.bgOpacity;
+  captionStyle.position = ccs.position;
+
+  // Caption fields
+  document.getElementById('captionTitleInput').value = cue.captionTitle || '';
+  document.getElementById('captionSubInput').value = cue.captionSub || '';
+  document.getElementById('captionTagInput').value = cue.captionTag || '';
+
+  // KB custom pan
+  const kb = cue.kbAnim || kbDirection;
+  if (kb === 'custom') {
+    if (!cue.kbCustomStart) cue.kbCustomStart = { x: 5, y: 5, w: 60, h: 60 };
+    if (!cue.kbCustomEnd) cue.kbCustomEnd = { x: 35, y: 30, w: 60, h: 60 };
+    openKBPointEditor(cue);
+  } else {
+    closeKBPointEditor();
+  }
+
+  // Update timing status chip
+  const fi = getCueFadeIn(cue), fo = getCueFadeOut(cue);
+  const fadeStr = (fi > 0 || fo > 0) ? ` · IN ${fi}s OUT ${fo}s` : ' · FADE 0';
+  document.getElementById('timingStatus').textContent = cueHold + 's' + fadeStr;
+
+  updateCaptionStyleUI();
+  updateCaptionPreviewBar();
+}
+
+// ═══════════════════════════════════════════════
+//  EDITING (changes apply to previewed cue)
+// ═══════════════════════════════════════════════
+function updateCaptionText() {
+  const cue = getCue(previewCueId);
+  if (!cue) return;
+  cue.captionTitle = document.getElementById('captionTitleInput').value;
+  cue.captionSub = document.getElementById('captionSubInput').value;
+  cue.captionTag = document.getElementById('captionTagInput').value;
+  renderIntoMonitor('pvw', cue, false);
+  updateCaptionPreviewBar();
+  renderCueList();
+}
+
+function updateCaptionStyle() {
+  captionStyle.textColor = document.getElementById('ltTextColor').value;
+  captionStyle.accentColor = document.getElementById('ltAccentColor').value;
+  captionStyle.bgColor = document.getElementById('ltBgColor').value;
+  captionStyle.bgOpacity = parseInt(document.getElementById('ltBgOpacity').value);
+  document.getElementById('ltBgOpacityVal').textContent = captionStyle.bgOpacity + '%';
+  const cue = getCue(previewCueId);
+  if (cue) {
+    ensureCueCaptionStyle(cue);
+    Object.assign(cue.captionStyle, { textColor: captionStyle.textColor, accentColor: captionStyle.accentColor, bgColor: captionStyle.bgColor, bgOpacity: captionStyle.bgOpacity });
+    renderIntoMonitor('pvw', cue, false);
+  }
+  updateCaptionPreviewBar();
+}
+
+function updateCaptionStyleUI() {
+  document.getElementById('ltTextColor').value = captionStyle.textColor;
+  document.getElementById('ltAccentColor').value = captionStyle.accentColor;
+  document.getElementById('ltBgColor').value = captionStyle.bgColor;
+  document.getElementById('ltBgOpacity').value = captionStyle.bgOpacity;
+  document.getElementById('ltBgOpacityVal').textContent = captionStyle.bgOpacity + '%';
+  updateCaptionPillUI();
+  // sync position buttons
+  document.querySelectorAll('.caption-pos-btn').forEach(b => b.classList.toggle('active', b.dataset.pos === captionStyle.position));
+}
+
+function updateCaptionPreviewBar() {
+  const cue = getCue(previewCueId);
+  const title = cue ? getCaptionTitle(cue) : 'Caption Preview';
+  const sub = cue ? getCaptionSub(cue) : '';
+  const tag = cue ? getCaptionTag(cue) : 'TAG';
+  const { bgColor, bgOpacity, textColor, accentColor } = captionStyle;
+  const bg = hexToRgba(bgColor, bgOpacity / 100);
+  document.getElementById('cpbBg').style.background = `linear-gradient(transparent, ${bg})`;
+  document.getElementById('cpbTag').style.color = accentColor;
+  document.getElementById('cpbTag').textContent = tag;
+  document.getElementById('cpbTitle').style.color = textColor;
+  document.getElementById('cpbTitle').textContent = title || '—';
+  document.getElementById('cpbSub').style.color = textColor;
+  document.getElementById('cpbSub').textContent = sub;
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function setCaptionEnabled(on) {
+  // If turning on and position was 'off', default to 'bottom'
+  if (on && captionStyle.position === 'off') captionStyle.position = 'bottom';
+  if (!on) captionStyle.position = 'off';
+  const cue = getCue(previewCueId);
+  if (cue) { ensureCueCaptionStyle(cue); cue.captionStyle.position = captionStyle.position; }
+  updateCaptionPillUI();
+  // sync position buttons
+  document.querySelectorAll('.caption-pos-btn').forEach(b => b.classList.toggle('active', b.dataset.pos === captionStyle.position));
+  if (cue) renderIntoMonitor('pvw', cue, false);
+  updateCaptionPreviewBar();
+  // Show/hide the preview bar
+  const bar = document.getElementById('captionPreviewBar');
+  if (bar) bar.style.display = on ? '' : 'none';
+}
+
+function updateCaptionPillUI() {
+  const on = captionStyle.position !== 'off';
+  const onBtn = document.getElementById('captionOnBtn');
+  const offBtn = document.getElementById('captionOffBtn');
+  if (onBtn) { onBtn.className = on ? 'active-on' : ''; }
+  if (offBtn) { offBtn.className = on ? '' : 'active-off'; }
+}
+
+function setCaptionPos(btn, pos) {
+  captionStyle.position = pos;
+  const cue = getCue(previewCueId);
+  if (cue) { ensureCueCaptionStyle(cue); cue.captionStyle.position = pos; }
+  document.querySelectorAll('.caption-pos-btn').forEach(b => b.classList.toggle('active', b.dataset.pos === pos));
+  updateCaptionPillUI();
+  const bar = document.getElementById('captionPreviewBar');
+  if (bar) bar.style.display = (pos !== 'off') ? '' : 'none';
+  if (cue) renderIntoMonitor('pvw', cue, false);
+}
+
+function toggleCaptionGlobal() {
+  // kept for backwards compat, now just toggles on/off
+  setCaptionEnabled(captionStyle.position === 'off');
+}
+
+// ═══════════════════════════════════════════════
+//  AI ANALYSIS
+// ═══════════════════════════════════════════════
+async function analyzeImage(cue) {
+  try {
+    const b64 = cue.src.split(',')[1];
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514', max_tokens: 800,
+        system: `Broadcast photo editor AI. Return ONLY valid JSON, no markdown:
+{"subject":"max 8 words","caption":"max 12 words","mood":"dramatic|intimate|epic|serene|energetic|somber|joyful","composition":"landscape|portrait|square|closeup|wide|aerial","hasFace":true,"recommendedMode":"fullscreen|blurbg|split","recommendReason":"max 12 words","kbAnim":"zoom-in|zoom-out|pan-right|pan-left|drift","kbAnimReason":"one word","tags":["a","b","c"]}`,
+        messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } }, { type: 'text', text: 'Analyze for broadcast. JSON only.' }] }]
+      })
+    });
+    const data = await r.json();
+    const a = JSON.parse(data.content.map(c => c.text || '').join('').replace(/```json|```/g, '').trim());
+    cue.analysis = a; cue.mode = cue.mode || a.recommendedMode; cue.kbAnim = cue.kbAnim || a.kbAnim;
+    if (previewCueId === cue.id) { renderAnalysis(a); setModeUI(a.recommendedMode); setKBUI(a.kbAnim); renderIntoMonitor('pvw', cue, false); updateCaptionPreviewBar(); }
+    renderCueList();
+  } catch {
+    cue.analysis = { caption: cue.name, mood: 'unknown', kbAnim: 'zoom-in', recommendedMode: 'fullscreen', tags: [] };
+    cue.mode = cue.mode || 'fullscreen'; cue.kbAnim = cue.kbAnim || 'zoom-in'; renderCueList();
+  }
+}
+function renderAnalysis(a) {
+  document.getElementById('analysisOut').innerHTML = `
+    <div class="analysis-desc">${a.caption || a.subject || '—'}</div>
+    <div>${(a.tags || []).map(t => `<span class="tag tag-y">${t}</span>`).join('')}<span class="tag tag-o">${a.mood || '—'}</span><span class="tag tag-b">${a.composition || '—'}</span></div>
+    <div style="margin-top:6px;color:var(--text3);font-size:9px;line-height:1.5;font-family:'DM Mono'">
+      <span style="color:var(--accent)">MODE:</span> ${a.recommendedMode} — ${a.recommendReason || ''}<br>
+      <span style="color:var(--accent)">MOTION:</span> ${a.kbAnim} (${a.kbAnimReason || 'AI'})
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════
+//  SETTINGS UI
+// ═══════════════════════════════════════════════
+document.querySelectorAll('.mode-mini').forEach(el => el.addEventListener('click', () => {
+  selectedMode = el.dataset.mode; setModeUI(selectedMode);
+  const cue = getCue(previewCueId);
+  if (cue) { cue.mode = selectedMode; renderIntoMonitor('pvw', cue, false); renderCueList(); }
+}));
+function setModeUI(mode) {
+  selectedMode = mode;
+  document.querySelectorAll('.mode-mini').forEach(el => el.classList.toggle('sel', el.dataset.mode === mode));
+  // Show/hide mode sub-panels
+  document.querySelectorAll('.mode-sub').forEach(el => el.classList.remove('active'));
+  const subId = { fullscreen: 'modeSubFullscreen', blurbg: 'modeSubBlurbg', split: 'modeSubSplit' }[mode];
+  if (subId) document.getElementById(subId).classList.add('active');
+  // Update status chip
+  const chip = document.getElementById('modeStatus');
+  if (chip) chip.textContent = { fullscreen: 'Full Screen', blurbg: 'Blur BG', split: 'Split' }[mode] || mode;
+}
+
+// ── Collapsible sections ──
+function toggleSec(hdr) {
+  hdr.classList.toggle('open');
+  const body = hdr.nextElementSibling;
+  if (body) body.classList.toggle('open');
+}
+
+// ── Fullscreen options ──
+function setVignette(on) {
+  const cue = getCue(previewCueId);
+  if (cue) { ensureCueModeOpts(cue); cue.modeOpts.fullscreen.vignette = on; }
+  else modeOpts.fullscreen.vignette = on;
+  document.getElementById('vigOff').className = 'sel-btn' + (!on ? ' on-b' : '');
+  document.getElementById('vigOn').className  = 'sel-btn' + (on  ? ' on-b' : '');
+  document.getElementById('vignetteLabel').textContent = on ? 'On' : 'Off';
+  refreshPreview();
+}
+function setFsFit(fit) {
+  const cue = getCue(previewCueId);
+  if (cue) { ensureCueModeOpts(cue); cue.modeOpts.fullscreen.objectFit = fit; }
+  else modeOpts.fullscreen.objectFit = fit;
+  document.getElementById('fsCover').className   = 'sel-btn' + (fit === 'cover'   ? ' on-b' : '');
+  document.getElementById('fsContain').className = 'sel-btn' + (fit === 'contain' ? ' on-b' : '');
+  document.getElementById('fsFitLabel').textContent = fit.charAt(0).toUpperCase() + fit.slice(1);
+  refreshPreview();
+}
+
+// ── Blur background options ──
+function updateModeOpts() {
+  const blurEl  = document.getElementById('blurAmt');
+  const brightEl = document.getElementById('bgBright');
+  const splitWEl = document.getElementById('splitImgW');
+  const cue = getCue(previewCueId);
+  if (cue) ensureCueModeOpts(cue);
+  const mo = cue ? cue.modeOpts : modeOpts;
+  if (blurEl)   { mo.blurbg.blurAmount    = parseInt(blurEl.value);   document.getElementById('blurAmtLabel').textContent   = blurEl.value + 'px'; }
+  if (brightEl) { mo.blurbg.bgBrightness  = parseInt(brightEl.value) / 100; document.getElementById('bgBrightLabel').textContent  = brightEl.value + '%'; }
+  if (splitWEl) { mo.split.splitImgWidth  = parseInt(splitWEl.value); document.getElementById('splitImgWLabel').textContent  = splitWEl.value + '%'; }
+  refreshPreview();
+}
+
+// ── Split layout options ──
+function setSplitAlign(align) {
+  const cue = getCue(previewCueId);
+  if (cue) { ensureCueModeOpts(cue); cue.modeOpts.split.splitTextAlign = align; }
+  else modeOpts.split.splitTextAlign = align;
+  ['Left','Center','Right'].forEach(a => {
+    document.getElementById('splitAl' + a).className = 'sel-btn' + (align === a.toLowerCase() ? ' on-b' : '');
+  });
+  refreshPreview();
+}
+
+function refreshPreview() {
+  const cue = getCue(previewCueId);
+  if (cue) renderIntoMonitor('pvw', cue, false);
+}
+function toggleMotionAdv() {
+  const panel = document.getElementById('motionAdv');
+  const btn = document.getElementById('motionAdvBtn');
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? 'block' : 'none';
+  btn.textContent = open ? 'Advanced ↑' : 'Advanced ›';
+  btn.classList.toggle('open', open);
+}
+function setKB(el, dir) {
+  setKBUI(dir); kbDirection = dir;
+  const cue = getCue(previewCueId);
+  if (cue && dir !== 'auto') {
+    cue.kbAnim = dir;
+    if (dir === 'custom') {
+      if (!cue.kbCustomStart) cue.kbCustomStart = { x: 5, y: 5, w: 60, h: 60 };
+      if (!cue.kbCustomEnd) cue.kbCustomEnd = { x: 35, y: 30, w: 60, h: 60 };
+      openKBPointEditor(cue);
+    } else {
+      closeKBPointEditor();
+      renderIntoMonitor('pvw', cue, false);
+    }
+  }
+  if (dir !== 'custom') closeKBPointEditor();
+}
+function setKBUI(dir) {
+  kbDirection = dir;
+  document.querySelectorAll('.kb-btn').forEach(b => {
+    b.classList.remove('active', 'kbauto', 'custom-pan');
+    if (b.dataset.kb === dir) {
+      b.classList.add('active');
+      if (dir === 'auto') b.classList.add('kbauto');
+      if (dir === 'custom') b.classList.add('custom-pan');
+    }
+  });
+  const labels = { auto:'Auto (AI)','zoom-in':'Zoom In','zoom-out':'Zoom Out','pan-right':'Pan Right','pan-left':'Pan Left',drift:'Drift',custom:'Custom Pan' };
+  const label = labels[dir] || dir;
+  document.getElementById('kbDirLabel').textContent = label;
+  const chip = document.getElementById('kbStatus');
+  if (chip) chip.textContent = label;
+}
+function setTrans(el, tr) {
+  transitionType = tr;
+  document.querySelectorAll('.trans-opt').forEach(b => b.classList.toggle('active', b.dataset.tr === tr));
+  const chip = document.getElementById('transStatus');
+  if (chip) chip.textContent = tr.toUpperCase() + ' · ' + transDuration.toFixed(1) + 's';
+}
+  const cue = getCue(previewCueId); if (cue) cue.transitionType = tr;
+function updateZoom() { zoomScale = parseInt(document.getElementById('zoomScale').value); document.getElementById('zoomLabel').textContent = ['Minimal','Subtle','Medium','Strong','Dramatic'][zoomScale - 1]; const cue = getCue(previewCueId); if (cue) cue.zoomScale = zoomScale; }
+function updateSpeed() { motionSpeed = parseInt(document.getElementById('motionSpeed').value); document.getElementById('speedLabel').textContent = ['Very Slow','Slow','Normal','Fast','Snap'][motionSpeed - 1]; const cue = getCue(previewCueId); if (cue) cue.motionSpeed = motionSpeed; }
+function updateTransDur() {
+  transDuration = parseInt(document.getElementById('transDur').value) / 10;
+  document.getElementById('transDurLabel').textContent = transDuration.toFixed(1) + 's';
+  const chip = document.getElementById('transStatus');
+  if (chip) chip.textContent = transitionType.toUpperCase() + ' · ' + transDuration.toFixed(1) + 's';
+  const cue2 = getCue(previewCueId); if (cue2) cue2.transDuration = transDuration;
+}
+function updateDur() {
+  holdDuration = parseInt(document.getElementById('durRange').value);
+  document.getElementById('durLabel').textContent = holdDuration + 's';
+  const fi = parseFloat(document.getElementById('fadeInDur').value) || 0;
+  const fo = parseFloat(document.getElementById('fadeOutDur').value) || 0;
+  const fadeStr = (fi > 0 || fo > 0) ? ` · IN ${fi}s OUT ${fo}s` : ' · FADE 0';
+  const chip = document.getElementById('timingStatus');
+  if (chip) chip.textContent = holdDuration + 's' + fadeStr;
+  const cue = getCue(previewCueId); if (cue) cue.holdDuration = holdDuration;
+}
+function updateFadeTimes() {
+  fadeInDur = parseFloat(document.getElementById('fadeInDur').value) || 0;
+  fadeOutDur = parseFloat(document.getElementById('fadeOutDur').value) || 0;
+  const cue = getCue(previewCueId);
+  if (cue) { cue.fadeIn = fadeInDur; cue.fadeOut = fadeOutDur; renderCueList(); }
+  const fadeStr = (fadeInDur > 0 || fadeOutDur > 0) ? ` · IN ${fadeInDur}s OUT ${fadeOutDur}s` : ' · FADE 0';
+  const chip = document.getElementById('timingStatus');
+  if (chip) chip.textContent = holdDuration + 's' + fadeStr;
+}
+function setEOC(val) {
+  updateEOCUI(val);
+  const cue = getCue(previewCueId);
+  if (cue) { cue.eoc = val; renderCueList(); }
+}
+function updateEOCUI(val) {
+  endOfCueBehavior = val;
+  document.getElementById('eocHold').className = 'sel-btn' + (val === 'hold' ? ' on-b' : '');
+  document.getElementById('eocFade').className = 'sel-btn' + (val === 'fade' ? ' on-y' : '');
+  document.getElementById('eocClear').className = 'sel-btn' + (val === 'clear' ? ' on-r' : '');
+  document.getElementById('eocHint').textContent = { hold:'Hold: last frame stays on screen', fade:'Fade Out: fades to black after hold', clear:'Clear: cuts to black immediately' }[val] || '';
+  const chip = document.getElementById('eocStatus');
+  if (chip) chip.textContent = val.toUpperCase();
+}
+
+document.querySelectorAll('.asp-btn').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.asp-btn').forEach(x => x.classList.remove('active'));
+  b.classList.add('active');
+  const asp = b.dataset.asp;
+  document.getElementById('pvwWrap').dataset.asp = asp;
+  document.getElementById('pgmWrap').dataset.asp = asp;
+  sendToPlayout('aspect', { asp });
+}));
+
+// ═══════════════════════════════════════════════
+//  CUSTOM KB POINT EDITOR
+// ═══════════════════════════════════════════════
+let kbEditorCue = null;
+let kbImgNatW = 1, kbImgNatH = 1;
+
+function openKBPointEditor(cue) {
+  kbEditorCue = cue;
+  const editor = document.getElementById('kbPointEditor');
+  const img = document.getElementById('kbPointImg');
+  editor.classList.add('visible');
+  img.src = cue.src;
+  const ready = () => {
+    kbImgNatW = img.naturalWidth || 1;
+    kbImgNatH = img.naturalHeight || 1;
+    const wrap = document.getElementById('kbPointWrap');
+    const wrapW = wrap.offsetWidth || 268;
+    const aspect = kbImgNatH / kbImgNatW;
+    wrap.style.height = Math.min(180, Math.round(wrapW * aspect)) + 'px';
+    if (!cue.kbCustomStart) cue.kbCustomStart = { x: 5, y: 10, w: 55, h: 55 };
+    if (!cue.kbCustomEnd) cue.kbCustomEnd = { x: 40, y: 35, w: 55, h: 55 };
+    renderKBFrames();
+  };
+  if (img.complete && img.naturalWidth) ready(); else img.onload = ready;
+}
+function closeKBPointEditor() { document.getElementById('kbPointEditor').classList.remove('visible'); kbEditorCue = null; }
+function renderKBFrames() {
+  const wrap = document.getElementById('kbPointWrap');
+  wrap.querySelectorAll('.kb-point-frame').forEach(f => f.remove());
+  if (!kbEditorCue) return;
+  makeKBFrame(wrap, kbEditorCue.kbCustomStart, 'start');
+  makeKBFrame(wrap, kbEditorCue.kbCustomEnd, 'end');
+  updateKBArrow(); updateKBInfo();
+}
+function makeKBFrame(wrap, point, type) {
+  const isStart = type === 'start';
+  const frame = document.createElement('div');
+  frame.className = `kb-point-frame ${type}-frame`;
+  frame.innerHTML = `<div class="kb-frame-label">${isStart ? 'START' : 'END'}</div><div class="kb-frame-resize"></div>`;
+  positionFrame(frame, point); wrap.appendChild(frame);
+  let mode = null, startMx, startMy, origX, origY, origW, origH;
+  function getXY(e) { const t = e.touches ? e.touches[0] : e; return { x: t.clientX, y: t.clientY }; }
+  function onDown(e, isResize) {
+    e.preventDefault(); e.stopPropagation();
+    const { x, y } = getXY(e); startMx = x; startMy = y;
+    origX = point.x; origY = point.y; origW = point.w; origH = point.h;
+    mode = isResize ? 'resize' : 'move'; frame.classList.add('dragging');
+  }
+  function onMove(e) {
+    if (!mode) return; e.preventDefault();
+    const { x, y } = getXY(e);
+    const rect = wrap.getBoundingClientRect();
+    const dx = (x - startMx) / rect.width * 100, dy = (y - startMy) / rect.height * 100;
+    if (mode === 'move') {
+      point.x = clamp(origX + dx, 0, 100 - point.w);
+      point.y = clamp(origY + dy, 0, 100 - point.h);
+    } else {
+      point.w = clamp(origW + dx, 10, 100 - point.x);
+      point.h = clamp(origH + dy, 10, 100 - point.y);
+    }
+    positionFrame(frame, point); updateKBArrow(); updateKBInfo();
+  }
+  function onUp() { mode = null; frame.classList.remove('dragging'); }
+  frame.querySelector('.kb-frame-resize').addEventListener('mousedown', e => onDown(e, true));
+  frame.querySelector('.kb-frame-resize').addEventListener('touchstart', e => onDown(e, true), { passive: false });
+  frame.addEventListener('mousedown', e => { if (!e.target.closest('.kb-frame-resize')) onDown(e, false); });
+  frame.addEventListener('touchstart', e => { if (!e.target.closest('.kb-frame-resize')) onDown(e, false); }, { passive: false });
+  window.addEventListener('mousemove', onMove); window.addEventListener('touchmove', onMove, { passive: false });
+  window.addEventListener('mouseup', onUp); window.addEventListener('touchend', onUp);
+}
+function positionFrame(frame, pt) { frame.style.left=pt.x+'%'; frame.style.top=pt.y+'%'; frame.style.width=pt.w+'%'; frame.style.height=pt.h+'%'; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function updateKBArrow() {
+  const cue = kbEditorCue; if (!cue) return;
+  const s = cue.kbCustomStart, e = cue.kbCustomEnd;
+  const sx = s.x+s.w/2, sy = s.y+s.h/2, ex = e.x+e.w/2, ey = e.y+e.h/2;
+  const line = document.getElementById('kbArrowLine');
+  const wrap = document.getElementById('kbPointWrap');
+  const w = wrap.offsetWidth, h = wrap.offsetHeight;
+  line.setAttribute('x1',(sx/100*w).toFixed(1)); line.setAttribute('y1',(sy/100*h).toFixed(1));
+  line.setAttribute('x2',(ex/100*w).toFixed(1)); line.setAttribute('y2',(ey/100*h).toFixed(1));
+}
+function updateKBInfo() {
+  const cue = kbEditorCue; if (!cue) return;
+  const s = cue.kbCustomStart, e = cue.kbCustomEnd;
+  document.getElementById('kbInfoStart').textContent = `${s.w.toFixed(0)}×${s.h.toFixed(0)}% @ ${s.x.toFixed(0)},${s.y.toFixed(0)}`;
+  document.getElementById('kbInfoEnd').textContent = `${e.w.toFixed(0)}×${e.h.toFixed(0)}% @ ${e.x.toFixed(0)},${e.y.toFixed(0)}`;
+  const zS = 100/Math.max(s.w,s.h), zE = 100/Math.max(e.w,e.h);
+  document.getElementById('kbCustomInfo').textContent = `${zS.toFixed(1)}x→${zE.toFixed(1)}x`;
+}
+function swapKBPoints() { if (!kbEditorCue) return; [kbEditorCue.kbCustomStart,kbEditorCue.kbCustomEnd]=[kbEditorCue.kbCustomEnd,kbEditorCue.kbCustomStart]; renderKBFrames(); }
+function resetKBPoints() { if (!kbEditorCue) return; kbEditorCue.kbCustomStart={x:5,y:10,w:55,h:55}; kbEditorCue.kbCustomEnd={x:40,y:35,w:55,h:55}; renderKBFrames(); }
+function previewKBCustom() { const cue = getCue(previewCueId); if (cue) renderIntoMonitor('pvw', cue, false); }
+
+// ═══════════════════════════════════════════════
+//  TRANSPORT
+// ═══════════════════════════════════════════════
+// TRANSPORT BROADCAST
+function takeLive() {
+  if (!cueItems.length) return;
+  if (previewCueId) {
+    const pvwCue = getCue(previewCueId);
+    if (pvwCue) {
+      let idx = pvwCue.groupId
+        ? cueItems.findIndex(i => i.type === 'group' && i.id === pvwCue.groupId)
+        : cueItems.findIndex(i => i.type === 'single' && i.id === pvwCue.id);
+      if (idx >= 0) programCueItemIdx = idx;
+    }
+  }
+  if (programCueItemIdx < 0) programCueItemIdx = 0;
+  isPlaying = true;
+  setStatus(true);
+  document.getElementById('takeBtn').classList.add('on-air');
+  playCurrentItem();
+  const nextIdx = (programCueItemIdx + 1) % cueItems.length;
+  const nextItem = cueItems[nextIdx];
+  if (nextItem && nextIdx !== programCueItemIdx) {
+    const nextCueId = nextItem.type === 'single' ? nextItem.id : (getGroup(nextItem.id)?.cueIds[0] || null);
+    if (nextCueId) setTimeout(() => loadPreviewCue(nextCueId), 50);
+  }
+}
+function fadeOutProgram() {
+  const dur = fadeOutDur > 0 ? fadeOutDur : 1.2;
+  sendToPlayout('fadeOut', { duration: dur });
+  const pgm = document.getElementById('pgmWrap');
+  pgm.querySelectorAll('.play-layer').forEach(l => {
+    l.style.transition = 'opacity ' + dur + 's ease';
+    l.style.opacity = '0';
+    setTimeout(() => { l.remove(); document.getElementById('pgmPlaceholder').style.display = ''; }, dur * 1000 + 100);
+  });
+  if (isPlaying) { isPlaying = false; setStatus(false); }
+  clearTimeout(playbackTimer); clearTimeout(fadeOutTimer); cancelAnimationFrame(progressRAF);
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('timeElapsed').textContent = '0:00';
+  document.getElementById('timeRemain').textContent = '—';
+  renderCueList();
+}
+function clearProgram() {
+  sendToPlayout('stop', {});
+  clearMonitor('pgm');
+  if (isPlaying) { isPlaying = false; setStatus(false); }
+  clearTimeout(playbackTimer); clearTimeout(fadeOutTimer); cancelAnimationFrame(progressRAF);
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('timeElapsed').textContent = '0:00';
+  document.getElementById('timeRemain').textContent = '—';
+  renderCueList();
+}
+function togglePlay() { if (isPlaying) pausePlayback(); else takeLive(); }
+function startPlayback() { takeLive(); }
+function pausePlayback() {
+  isPlaying = false;
+  setStatus(false);
+  clearTimeout(playbackTimer); clearTimeout(fadeOutTimer); cancelAnimationFrame(progressRAF);
+}
+function stopPlayback() {
+  const prevPlaying = isPlaying;
+  pausePlayback();
+  if (prevPlaying) {
+    const item = cueItems[programCueItemIdx];
+    const pc = item ? getFirstCueOfItem(item) : null;
+    applyEOC(getCueEOC(pc));
+  }
+  programGroupImageIdx = -1;
+  document.getElementById('progressFill').style.width = '0%';
+  document.getElementById('timeElapsed').textContent = '0:00';
+  document.getElementById('timeRemain').textContent = '—';
+  renderCueList();
+}
+
+function applyEOC(eoc) {
+  if (eoc === 'clear') {
+    sendToPlayout('stop', {});
+    clearMonitor('pgm');
+  } else if (eoc === 'fade') {
+    const dur = fadeOutDur > 0 ? fadeOutDur : 1;
+    sendToPlayout('fadeOut', { duration: dur });
+    const pgm = document.getElementById('pgmWrap');
+    pgm.querySelectorAll('.play-layer').forEach(l => {
+      l.style.transition = `opacity ${dur}s ease`; l.style.opacity = '0';
+      setTimeout(() => { l.remove(); document.getElementById('pgmPlaceholder').style.display = ''; }, dur * 1000 + 100);
+    });
+  }
+}
+
+function clearMonitor(which) {
+  const wrap = document.getElementById(which === 'pvw' ? 'pvwWrap' : 'pgmWrap');
+  wrap.querySelectorAll('.play-layer').forEach(l => l.remove());
+  document.getElementById(which === 'pvw' ? 'pvwPlaceholder' : 'pgmPlaceholder').style.display = '';
+}
+
+function nextCue() {
+  if (!cueItems.length) return;
+  clearTimeout(playbackTimer); clearTimeout(fadeOutTimer); cancelAnimationFrame(progressRAF);
+  const item = cueItems[programCueItemIdx];
+  if (item && item.type === 'group' && isPlaying) {
+    const g = getGroup(item.id);
+    if (g && programGroupImageIdx + 1 < g.cueIds.length) { programGroupImageIdx++; playGroupImage(); return; }
+  }
+  const next = (programCueItemIdx + 1) % cueItems.length;
+  programCueItemIdx = next;
+  document.getElementById('cueCounter').textContent = String(next + 1).padStart(2, '0');
+  if (isPlaying) playCurrentItem();
+  renderCueList();
+}
+
+function prevCue() {
+  if (!cueItems.length) return;
+  clearTimeout(playbackTimer); clearTimeout(fadeOutTimer); cancelAnimationFrame(progressRAF);
+  const prev = ((programCueItemIdx - 1) + cueItems.length) % cueItems.length;
+  programCueItemIdx = prev;
+  document.getElementById('cueCounter').textContent = String(prev + 1).padStart(2, '0');
+  if (isPlaying) playCurrentItem();
+  renderCueList();
+}
+
+function toggleAuto() {
+  autoAdvance = !autoAdvance;
+  const btn = document.getElementById('autoBtn');
+  btn.textContent = autoAdvance ? '⟳ LOOP ON' : '⟳ LOOP OFF';
+  btn.classList.toggle('on', autoAdvance);
+}
+
+// ── Playback engine ──
+function playCurrentItem() {
+  const item = cueItems[programCueItemIdx];
+  if (!item) return;
+  if (item.type === 'single') {
+    programGroupImageIdx = -1;
+    playSingleCue(getCue(item.id), () => advanceAfterItem());
+  } else {
+    const g = getGroup(item.id);
+    if (!g || !g.cueIds.length) { advanceAfterItem(); return; }
+    programGroupImageIdx = 0; renderCueList(); playGroupImage();
+  }
+}
+
+function playGroupImage() {
+  const item = cueItems[programCueItemIdx];
+  if (!item || item.type !== 'group') return;
+  const g = getGroup(item.id); if (!g) return;
+  const cue = getCue(g.cueIds[programGroupImageIdx]);
+  renderCueList();
+  playSingleCue(cue, () => {
+    if (programGroupImageIdx + 1 < g.cueIds.length) { programGroupImageIdx++; playGroupImage(); }
+    else advanceAfterItem();
+  });
+}
+
+function playSingleCue(cue, onComplete) {
+  if (!cue) { onComplete(); return; }
+  const dur = getCueHoldDuration(cue) * 1000;
+  const fi = getCueFadeIn(cue);
+  const fo = getCueFadeOut(cue);
+
+  // Render into PROGRAM monitor
+  renderIntoMonitor('pgm', cue, true);
+  sendToPlayout('play', buildPlayoutPayload(cue));
+  document.getElementById('pgmCueName').textContent = getCaptionTitle(cue) || cue.name;
+
+  playStartTime = Date.now();
+  cancelAnimationFrame(progressRAF);
+  (function tick() {
+    const el = Date.now() - playStartTime;
+    const pct = Math.min(el / dur * 100, 100);
+    document.getElementById('progressFill').style.width = pct + '%';
+    const eS = Math.floor(el / 1000), rS = Math.max(0, getCueHoldDuration(cue) - eS);
+    document.getElementById('timeElapsed').textContent = `${Math.floor(eS/60)}:${String(eS%60).padStart(2,'0')}`;
+    document.getElementById('timeRemain').textContent = `-${Math.floor(rS/60)}:${String(rS%60).padStart(2,'0')}`;
+    if (el < dur) progressRAF = requestAnimationFrame(tick);
+  })();
+
+  clearTimeout(fadeOutTimer);
+  if (fo > 0) fadeOutTimer = setTimeout(() => { if (isPlaying) sendToPlayout('fadeOut', { duration: fo, partial: true }); }, Math.max(0, dur - fo * 1000));
+  clearTimeout(playbackTimer);
+  playbackTimer = setTimeout(() => { if (isPlaying) onComplete(); }, dur);
+}
+
+function advanceAfterItem() {
+  // Single cues ALWAYS stop after playing — never auto-advance to the next item.
+  // Groups handle their own internal image flow via playGroupImage() above.
+  // The LOOP button (autoAdvance) is the only way to continue to the next cue item.
+  const item = cueItems[programCueItemIdx];
+
+  if (!autoAdvance) {
+    applyEOC(getCueEOC(getFirstCueOfItem(item)));
+    pausePlayback(); renderCueList(); return;
+  }
+
+  // Loop mode: step to next item, wrap at end
+  const isLast = programCueItemIdx >= cueItems.length - 1;
+  programCueItemIdx = isLast ? 0 : programCueItemIdx + 1;
+  document.getElementById('cueCounter').textContent = String(programCueItemIdx + 1).padStart(2, '0');
+  playCurrentItem();
+}
+
+function setStatus(live) {
+  const badge = document.getElementById('statusBadge');
+  badge.className = live ? 'badge badge-live' : 'badge badge-idle';
+  badge.innerHTML = live ? '<div class="dot dot-red"></div> ON AIR' : '<div class="dot dot-grey"></div> IDLE';
+  document.getElementById('playoutBadge').classList.toggle('vis', live);
+  const tb = document.getElementById('takeBtn');
+  if (tb) tb.classList.toggle('on-air', live);
+}
+
+// ── Editing ──
+function renameCue(id, e) { e.preventDefault(); const cue=getCue(id); if(!cue) return; const n=prompt('Rename:',cue.name); if(n!=null&&n.trim()){cue.name=n.trim();renderCueList();} }
+function renameGroup(id, e) { e.preventDefault(); const g=getGroup(id); if(!g) return; const n=prompt('Rename group:',g.name); if(n!=null&&n.trim()){g.name=n.trim();renderCueList();} }
+function deleteCueById(id, e) {
+  if(e) e.stopPropagation();
+  const idx=cues.findIndex(c=>c.id===id); if(idx<0) return;
+  const cue=cues[idx];
+  if(cue.groupId){const g=getGroup(cue.groupId);if(g)g.cueIds=g.cueIds.filter(x=>x!==id);}
+  cues.splice(idx,1); rebuildCueItems();
+  if(programCueItemIdx>=cueItems.length) programCueItemIdx=Math.max(0,cueItems.length-1);
+  if(previewCueId===id){previewCueId=null; clearMonitor('pvw');}
+  renderCueList();
+}
+function deleteGroupById(id, e) {
+  if(e) e.stopPropagation();
+  if(!confirm('Delete group and all its images?')) return;
+  const g=getGroup(id);
+  if(g) g.cueIds.forEach(cid=>{const i=cues.findIndex(c=>c.id===cid);if(i>=0)cues.splice(i,1);});
+  const gi=groups.findIndex(x=>x.id===id); if(gi>=0) groups.splice(gi,1);
+  rebuildCueItems(); if(programCueItemIdx>=cueItems.length) programCueItemIdx=Math.max(0,cueItems.length-1); renderCueList();
+}
+function ejectFromGroup(cueId, groupId, e) {
+  if(e) e.stopPropagation();
+  const cue=getCue(cueId); if(!cue) return;
+  const g=getGroup(groupId); if(g) g.cueIds=g.cueIds.filter(x=>x!==cueId);
+  cue.groupId=null; rebuildCueItems(); renderCueList();
+}
+function clearCues() {
+  if(!confirm('Clear all cues?')) return;
+  cues=[]; groups=[]; cueItems=[]; programCueItemIdx=-1; programGroupImageIdx=-1; previewCueId=null;
+  stopPlayback(); clearMonitor('pvw'); clearMonitor('pgm'); renderCueList();
+}
+
+// ═══════════════════════════════════════════════
+//  RENDER ENGINE
+// ═══════════════════════════════════════════════
+function getKBAnim(cue) {
+  if (kbDirection !== 'auto' && kbDirection !== 'custom') return kbDirection;
+  return cue.kbAnim || 'zoom-in';
+}
+function getKBScaleVar(cue) { const zs=getCueZoomScale(cue); return [1.05,1.10,1.18,1.28,1.40][zs - 1]; }
+function getKBDuration(cue) { const hd=getCueHoldDuration(cue); const sp=getCueMotionSpeed(cue); return Math.max(1, [hd*1.5,hd*1.2,hd,hd*0.8,hd*0.6][sp - 1]); }
+
+// Render into either 'pvw' or 'pgm' monitor
+function renderIntoMonitor(which, cue, withTransition) {
+  const wrapId = which === 'pvw' ? 'pvwWrap' : 'pgmWrap';
+  const phId = which === 'pvw' ? 'pvwPlaceholder' : 'pgmPlaceholder';
+  const wrap = document.getElementById(wrapId);
+  document.getElementById(phId).style.display = 'none';
+
+  const mode = cue.mode || selectedMode;
+  const kbAnim = getKBAnim(cue);
+  const kbScale = getKBScaleVar(cue);
+  const kbDur = getKBDuration(cue);
+  const title = getCaptionTitle(cue);
+  const sub = getCaptionSub(cue);
+  const tag = getCaptionTag(cue);
+  const _td=getCueTransDuration(cue);
+  const tdMs=_td*1000;
+  const _transType=getCueTransitionType(cue);
+  const fi = getCueFadeIn(cue);
+  const cs=getCueCaptionStyle(cue);
+  const showCaption=cs.position!=='off';
+
+  const newLayer = document.createElement('div');
+  newLayer.style.cssText = 'position:absolute;inset:0;z-index:10;';
+  newLayer.innerHTML = buildLayerHTML(cue, mode, title, sub, tag, showCaption);
+
+  const old = wrap.querySelectorAll('.play-layer');
+  if (withTransition && old.length > 0 && _transType !== 'cut') {
+    old.forEach(l => {
+      l.style.cssText += `;z-index:9;--td:${_td}s;`;
+      if (_transType === 'fade') l.classList.add('trans-fade-out');
+      else if (_transType === 'czoom') l.classList.add('trans-czoom-out');
+      else if (_transType === 'dip') l.classList.add('trans-dip-out');
+      setTimeout(() => l.remove(), tdMs + 100);
+    });
+    newLayer.style.cssText = `position:absolute;inset:0;z-index:10;--td:${_td}s;`;
+    if (_transType === 'fade') newLayer.classList.add('trans-fade-in');
+    else if (_transType === 'wipe') newLayer.classList.add('trans-wipe-in');
+    else if (_transType === 'czoom') newLayer.classList.add('trans-czoom-in');
+    else if (_transType === 'dip') newLayer.classList.add('trans-dip-in');
+  } else { old.forEach(l => l.remove()); }
+
+  if (fi > 0 && withTransition) {
+    newLayer.style.opacity = '0';
+    newLayer.style.transition = `opacity ${fi}s ease`;
+    requestAnimationFrame(() => requestAnimationFrame(() => { newLayer.style.opacity = '1'; }));
+  }
+
+  newLayer.classList.add('play-layer');
+  wrap.appendChild(newLayer);
+
+  // KB animation
+  const kbEl = newLayer.querySelector('.kb-layer');
+  if (kbEl) {
+    if ((cue.kbAnim === 'custom' || kbDirection === 'custom') && cue.kbCustomStart && cue.kbCustomEnd) {
+      applyCustomKBAnimation(newLayer, cue, kbDur);
+    } else {
+      kbEl.style.setProperty('--ks', kbScale);
+      const am = { 'zoom-in':'kb-zi','zoom-out':'kb-zo','pan-right':'kb-pr','pan-left':'kb-pl','drift':'kb-dr' };
+      kbEl.style.animation = `${am[kbAnim] || 'kb-zi'} ${kbDur}s linear forwards`;
+    }
+  }
+
+  if (showCaption && mode !== 'split') {
+    const lt = newLayer.querySelector('.lower-third');
+    if (lt) {
+      // Apply caption styles
+      const { bgColor, bgOpacity, textColor, accentColor, position } = cs;
+      lt.classList.add(`pos-${position}`);
+      lt.style.background = `linear-gradient(transparent, ${hexToRgba(bgColor, bgOpacity/100)})`;
+      lt.querySelector('.lt-tag').style.color = accentColor;
+      lt.querySelector('.lt-title').style.color = textColor;
+      const subEl = lt.querySelector('.lt-sub');
+      if (subEl) subEl.style.color = textColor;
+      setTimeout(() => lt.classList.add('vis'), withTransition ? tdMs + 1000 : 600);
+    }
+  }
+
+  const pf = newLayer.querySelector('.prog-fill');
+  if (pf && isPlaying && which === 'pgm') { pf.style.transition = `width ${getCueHoldDuration(cue)}s linear`; requestAnimationFrame(() => { pf.style.width = '100%'; }); }
+}
+
+function buildLayerHTML(cue, mode, title, sub, tag, showCaption) {
+  const mo = getCueModeOpts(cue);
+  let inner = '';
+  if (mode === 'fullscreen') {
+    const opts = mo.fullscreen;
+    const vig  = opts.vignette ? '<div class="vignette"></div>' : '';
+    const fit  = opts.objectFit || 'cover';
+    inner = `<div class="kb-layer"><img class="fill" src="${cue.src}" style="object-fit:${fit}"></div>${vig}`;
+  } else if (mode === 'blurbg') {
+    const opts   = mo.blurbg;
+    const blurPx = opts.blurAmount || 28;
+    const bright = opts.bgBrightness !== undefined ? opts.bgBrightness : 0.45;
+    inner = `<div class="kb-layer"><div class="blur-bg" style="background-image:url(${cue.src});filter:blur(${blurPx}px) brightness(${bright}) saturate(1.4)"></div><div class="blur-fg"><img src="${cue.src}"></div></div>`;
+  } else if (mode === 'split') {
+    const opts   = mo.split;
+    const imgW   = (opts.splitImgWidth || 55) + '%';
+    const tAlign = opts.splitTextAlign || 'left';
+    inner = `<div style="position:absolute;inset:0"><div class="split-bg-layer" style="background-image:url(${cue.src})"></div><div class="split-content"><div class="split-img-wrap" style="width:${imgW}"><img src="${cue.src}"></div><div class="split-text" style="text-align:${tAlign}"><h2>${title || cue.name}</h2><p>${sub || cue.analysis?.subject || ''}</p></div></div></div>`;
+  }
+  if (showCaption && mode !== 'split') {
+    inner += `<div class="lower-third">
+      <div class="lt-tag">${tag}</div>
+      <div class="lt-title">${title || cue.name}</div>
+      ${sub ? `<div class="lt-sub">${sub}</div>` : ''}
+    </div>`;
+  }
+  inner += `<div class="prog-bar"><div class="prog-fill"></div></div>`;
+  return inner;
+}
+
+// Custom KB animation
+function customPointToTransform(pt) {
+  const scale = Math.max(100 / pt.w, 100 / pt.h);
+  const cx = pt.x + pt.w / 2, cy = pt.y + pt.h / 2;
+  const tx = -(cx - 50), ty = -(cy - 50);
+  return { scale, tx, ty };
+}
+let customAnimCounter = 0;
+function applyCustomKBAnimation(layer, cue, kbDur) {
+  const kbEl = layer.querySelector('.kb-layer');
+  if (!kbEl || !cue.kbCustomStart || !cue.kbCustomEnd) return;
+  const from = customPointToTransform(cue.kbCustomStart);
+  const to = customPointToTransform(cue.kbCustomEnd);
+  const toCss = t => `scale(${t.scale.toFixed(4)}) translate(${t.tx.toFixed(3)}%, ${t.ty.toFixed(3)}%)`;
+  const animName = `kbC${++customAnimCounter}`;
+  const styleEl = document.createElement('style');
+  styleEl.setAttribute('data-kb-custom','1');
+  styleEl.textContent = `@keyframes ${animName}{from{transform:${toCss(from)}}to{transform:${toCss(to)}}}`;
+  document.head.appendChild(styleEl);
+  const all = document.querySelectorAll('style[data-kb-custom]');
+  if (all.length > 30) all[0].remove();
+  kbEl.style.transformOrigin = '50% 50%';
+  kbEl.style.animation = `${animName} ${kbDur}s linear forwards`;
+}
+
+// ═══════════════════════════════════════════════
+//  PLAYOUT WINDOW
+// ═══════════════════════════════════════════════
+function buildPlayoutPayload(cue) {
+  const mode = cue.mode || selectedMode;
+  return {
+    src: cue.src, name: cue.name, mode,
+    kbAnim: getKBAnim(cue), kbScale: getKBScaleVar(cue), kbDur: getKBDuration(cue),
+    kbCustomStart: cue.kbCustomStart || null, kbCustomEnd: cue.kbCustomEnd || null,
+    captionTitle: getCaptionTitle(cue), captionSub: getCaptionSub(cue), captionTag: getCaptionTag(cue),
+    captionStyle,
+    subject: cue.analysis?.subject || '',
+    holdDuration, captionOn: captionStyle.position !== 'off', transitionType, transDuration,
+    fadeIn: getCueFadeIn(cue), fadeOut: getCueFadeOut(cue), eoc: getCueEOC(cue),
+    aspect: document.querySelector('.asp-btn.active').dataset.asp,
+    modeOpts: modeOpts[mode] || {}
+  };
+}
+function sendToPlayout(type, data) {
+  playoutChannel.postMessage({ type, ...data });
+  if (playoutWindow && !playoutWindow.closed) playoutWindow.postMessage({ type, ...data }, '*');
+}
+function pingPlayout() {
+  playoutChannel.postMessage({ type: 'ping' });
+  if (playoutWindow && !playoutWindow.closed) playoutWindow.postMessage({ type: 'ping' }, '*');
+  const s = document.getElementById('playoutStatus');
+  s.textContent = 'Pinging...'; s.style.color = 'var(--text3)';
+  setTimeout(() => { if (s.textContent === 'Pinging...') { s.textContent = 'No response — open frameflow-playout.html'; s.style.color = 'var(--red)'; } }, 2000);
+}
+function openPlayout() {
+  if (playoutWindow && !playoutWindow.closed) { playoutWindow.focus(); return; }
+  playoutWindow = window.open('frameflow-playout.html', 'frameflow_playout', 'width=1280,height=720');
+  setTimeout(() => {
+    sendToPlayout('init', { aspect: document.querySelector('.asp-btn.active').dataset.asp });
+  }, 800);
+}
+
+// ═══════════════════════════════════════════════
+//  MONITOR SPLITTER (drag to resize PVW/PGM)
+// ═══════════════════════════════════════════════
+(function() {
+  const splitter = document.getElementById('monitorSplitter');
+  const dualMonitors = document.getElementById('dualMonitors');
+  let dragging = false, startX = 0, startPct = 38;
+
+  splitter.addEventListener('mousedown', e => {
+    dragging = true;
+    startX = e.clientX;
+    const totalW = dualMonitors.offsetWidth;
+    startPct = parseFloat(dualMonitors.style.getPropertyValue('--pvw-split') || '38');
+    if (isNaN(startPct)) startPct = 38;
+    splitter.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const totalW = dualMonitors.offsetWidth - 4;
+    const delta = e.clientX - startX;
+    const deltaPct = (delta / totalW) * 100;
+    const newPct = Math.min(70, Math.max(20, startPct + deltaPct));
+    dualMonitors.style.setProperty('--pvw-split', newPct + '%');
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+// ═══════════════════════════════════════════════
+//  PREVIEW PLAYBACK (independent of program)
+// ═══════════════════════════════════════════════
+let pvwPlaying = false;
+let pvwTimer = null;
+let pvwProgressRAF = null;
+
+function togglePvwPlay() {
+  if (pvwPlaying) stopPvwPlay();
+  else startPvwPlay();
+}
+
+function startPvwPlay() {
+  const cue = getCue(previewCueId);
+  if (!cue) return;
+  pvwPlaying = true;
+
+  const btn = document.getElementById('pvwPlayBtn');
+  btn.textContent = 'STOP';
+  btn.classList.add('playing');
+  document.getElementById('pvwWrap').classList.add('is-playing');
+
+  // Clear old layer and render fresh so KB animation restarts from frame 0
+  const pvwWrap = document.getElementById('pvwWrap');
+  pvwWrap.querySelectorAll('.play-layer').forEach(l => l.remove());
+  document.getElementById('pvwPlaceholder').style.display = 'none';
+
+  const mode = cue.mode || selectedMode;
+  const kbAnim = getKBAnim(cue);
+  const kbScale = getKBScaleVar(cue);
+  const kbDur = getKBDuration(cue);
+  const title = getCaptionTitle(cue);
+  const sub = getCaptionSub(cue);
+  const tag = getCaptionTag(cue);
+  const cs2=getCueCaptionStyle(cue);
+  const showCaption=cs2.position!=='off';
+
+  const layer = document.createElement('div');
+  layer.style.cssText = 'position:absolute;inset:0;z-index:10;';
+  layer.innerHTML = buildLayerHTML(cue, mode, title, sub, tag, showCaption);
+  layer.classList.add('play-layer');
+  pvwWrap.appendChild(layer);
+
+  // Apply KB animation
+  const kbEl = layer.querySelector('.kb-layer');
+  if (kbEl) {
+    if ((cue.kbAnim === 'custom' || kbDirection === 'custom') && cue.kbCustomStart && cue.kbCustomEnd) {
+      applyCustomKBAnimation(layer, cue, kbDur);
+    } else {
+      kbEl.style.setProperty('--ks', kbScale);
+      const am = {'zoom-in':'kb-zi','zoom-out':'kb-zo','pan-right':'kb-pr','pan-left':'kb-pl','drift':'kb-dr'};
+      kbEl.style.animation = (am[kbAnim] || 'kb-zi') + ' ' + kbDur + 's linear forwards';
+    }
+  }
+
+  // Caption
+  if (showCaption && mode !== 'split') {
+    const lt = layer.querySelector('.lower-third');
+    if (lt) {
+      const { bgColor, bgOpacity, textColor, accentColor, position } = cs2;
+      lt.classList.add('pos-' + position);
+      lt.style.background = 'linear-gradient(transparent, ' + hexToRgba(bgColor, bgOpacity/100) + ')';
+      lt.querySelector('.lt-tag').style.color = accentColor;
+      lt.querySelector('.lt-title').style.color = textColor;
+      const subEl = lt.querySelector('.lt-sub');
+      if (subEl) subEl.style.color = textColor;
+      setTimeout(() => lt.classList.add('vis'), 600);
+    }
+  }
+
+  // Progress bar on pvw
+  const pf = layer.querySelector('.prog-fill');
+  const dur=getCueHoldDuration(cue)*1000;
+  if (pf) {
+    const start = Date.now();
+    cancelAnimationFrame(pvwProgressRAF);
+    (function tick() {
+      const el = Date.now() - start;
+      const pct = Math.min(el / dur * 100, 100);
+      pf.style.width = pct + '%';
+      if (el < dur) pvwProgressRAF = requestAnimationFrame(tick);
+    })();
+  }
+
+  // Auto-stop
+  clearTimeout(pvwTimer);
+  pvwTimer = setTimeout(() => stopPvwPlay(), dur);
+}
+
+function stopPvwPlay() {
+  pvwPlaying = false;
+  clearTimeout(pvwTimer);
+  cancelAnimationFrame(pvwProgressRAF);
+  const btn = document.getElementById('pvwPlayBtn');
+  btn.textContent = '▶ PLAY';
+  btn.classList.remove('playing');
+  document.getElementById('pvwWrap').classList.remove('is-playing');
+  // Re-render static preview
+  const cue = getCue(previewCueId);
+  if (cue) renderIntoMonitor('pvw', cue, false);
+}
+
+// ── KEYBOARD SHORTCUTS ──
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.code === 'Space') { e.preventDefault(); takeLive(); }
+  if (e.code === 'ArrowRight') { e.preventDefault(); nextCue(); }
+  if (e.code === 'ArrowLeft')  { e.preventDefault(); prevCue(); }
+  if (e.code === 'KeyF') { e.preventDefault(); fadeOutProgram(); }
+  if (e.code === 'KeyC') { e.preventDefault(); clearProgram(); }
+});
+
+// ── INIT ──
+updateDur(); updateTransDur(); updateZoom(); updateSpeed(); updateEOCUI('hold');
+updateCaptionStyleUI(); updateCaptionPreviewBar(); updateCaptionPillUI();
+// Caption preview bar hidden since captions default to off
+const _initBar = document.getElementById('captionPreviewBar');
+if (_initBar) _initBar.style.display = 'none';
+// Init mode sub-panel (fullscreen is default)
+setModeUI('fullscreen');
+rebuildCueItems(); renderCueList();
+</script>
+</body>
+</html>
