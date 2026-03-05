@@ -16,6 +16,68 @@ import { InferenceClient } from '@huggingface/inference';
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 
+// In-memory temp assets for local/hybrid playout (same network). Keyed by id, TTL 1 hour.
+const TEMP_ASSET_TTL_MS = 60 * 60 * 1000;
+const tempAssets = new Map(); // id -> { buffer, contentType, createdAt }
+
+function cleanExpiredTempAssets() {
+  const now = Date.now();
+  for (const [id, entry] of tempAssets.entries()) {
+    if (now - entry.createdAt > TEMP_ASSET_TTL_MS) tempAssets.delete(id);
+  }
+}
+
+app.post('/api/temp-asset', (req, res) => {
+  const raw = req.body?.image;
+  if (!raw || typeof raw !== 'string') {
+    return res.status(400).json({ error: 'Missing body.image (data URL or base64)' });
+  }
+  let buffer;
+  let contentType = 'image/jpeg';
+  try {
+    if (raw.startsWith('data:')) {
+      const match = raw.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        contentType = match[1].trim();
+        buffer = Buffer.from(match[2].trim(), 'base64');
+      } else {
+        return res.status(400).json({ error: 'Invalid data URL' });
+      }
+    } else {
+      buffer = Buffer.from(raw.trim(), 'base64');
+    }
+  } catch (e) {
+    return res.status(400).json({ error: 'Invalid image encoding' });
+  }
+  if (!buffer || buffer.length < 100) {
+    return res.status(400).json({ error: 'Image data too small' });
+  }
+  if (buffer.length > 25 * 1024 * 1024) {
+    return res.status(413).json({ error: 'Image too large (max 25MB)' });
+  }
+  cleanExpiredTempAssets();
+  const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  tempAssets.set(id, { buffer, contentType, createdAt: Date.now() });
+  res.json({ id });
+});
+
+app.get('/api/temp-asset/:id', (req, res) => {
+  const entry = tempAssets.get(req.params.id);
+  if (!entry) {
+    return res.status(404).send('Not found');
+  }
+  if (Date.now() - entry.createdAt > TEMP_ASSET_TTL_MS) {
+    tempAssets.delete(req.params.id);
+    return res.status(404).send('Expired');
+  }
+  res.setHeader('Content-Type', entry.contentType);
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.send(entry.buffer);
+});
+
+// Confirm temp-asset routes are loaded (so you know you restarted after adding them)
+console.log('Temp asset API: POST /api/temp-asset, GET /api/temp-asset/:id (for local playout across browsers)');
+
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -227,4 +289,5 @@ const port = Number(process.env.PORT) || 3001;
 app.listen(port, () => {
   const status = token ? 'on' : 'off';
   console.log('Frameflow API listening on http://localhost:' + port + ' (analysis: ' + status + ')');
+  console.log('  → Local playout: ensure both Vite (dev) and this server are running; /api proxies to this port.');
 });

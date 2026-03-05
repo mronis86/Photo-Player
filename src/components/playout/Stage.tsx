@@ -2,14 +2,15 @@
  * Playout stage — connection by code, then transparent full-screen program output.
  */
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
-import type { PlayoutPayload } from '../../lib/types';
-import { subscribeToPlayout, subscribeToWindowMessage, getPlayoutChannel, HEARTBEAT_INTERVAL_MS } from '../../lib/playoutChannel';
+import type { PlayoutPayload, WipeDirection } from '../../lib/types';
+import { subscribeToPlayout, subscribeToWindowMessage, getPlayoutChannel, connectToPlayoutChannelAsPlayout, HEARTBEAT_INTERVAL_MS } from '../../lib/playoutChannel';
 import {
   getKBAnimationName,
   applyCustomKBKeyframes,
   applyCustomKBKeyframesFromXYZ,
   hexToRgba,
   getBlurContainMaxScale,
+  getWipeClipPath,
 } from '../../lib/controllerHelpers';
 
 function getImageSrc(p: PlayoutPayload): string {
@@ -47,6 +48,14 @@ export function Stage() {
   const [crossfadeDuration, setCrossfadeDuration] = useState(0.8);
   const crossfadeDurationRef = useRef(0.8);
   const crossfadeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 'fade' = opacity crossfade; 'wipe' = clip-path wipe; 'dip' = dip to color (CSS animations). */
+  const [crossfadeTransitionKind, setCrossfadeTransitionKind] = useState<'fade' | 'wipe' | 'dip'>('fade');
+  const [wipeRevealPct, setWipeRevealPct] = useState(100);
+  const [wipeDirection, setWipeDirection] = useState<WipeDirection>('left');
+  const [dipColor, setDipColor] = useState('#000000');
+  const wipeRafRef = useRef<number | null>(null);
+  const wipeCommitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dipCommitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fadeOpacity, setFadeOpacity] = useState(0);
   const [fadeTransition, setFadeTransition] = useState<string>('none');
   const [contentOpacity, setContentOpacity] = useState(1);
@@ -70,12 +79,17 @@ export function Stage() {
   const progRafRef = useRef<number | null>(null);
   /** Buffer: pending play to apply after bufferMs (and after incoming image ready for fade). */
   const pendingApplyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingPlayRef = useRef<{ p: PlayoutPayload; doFade: boolean } | null>(null);
+  const pendingPlayRef = useRef<{ p: PlayoutPayload; doFade: boolean; doWipe?: boolean; doDip?: boolean } | null>(null);
   const bufferPassedRef = useRef(false);
   const incomingImageReadyRef = useRef(false);
   const preloadImageRef = useRef<HTMLImageElement | null>(null);
-  const applyPlayRef = useRef<((p: PlayoutPayload, doFade: boolean) => void) | null>(null);
+  const applyPlayRef = useRef<((p: PlayoutPayload, doFade: boolean, doWipe?: boolean, doDip?: boolean) => void) | null>(null);
   const applyStopRef = useRef<(() => void) | null>(null);
+  /** Ref for message handler so Connect (Realtime) can forward messages. */
+  const messageHandlerRef = useRef<((d: { type: string; [key: string]: unknown }) => void) | null>(null);
+  /** Realtime send + unsubscribe when connected via Supabase. */
+  const realtimeSendRef = useRef<((msg: { type: string; [key: string]: unknown }) => void) | null>(null);
+  const realtimeUnsubscribeRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     payloadRef.current = payload;
   }, [payload]);
@@ -97,11 +111,23 @@ export function Stage() {
       clearTimeout(crossfadeTimeoutRef.current);
       crossfadeTimeoutRef.current = null;
     }
+    if (wipeRafRef.current != null) {
+      cancelAnimationFrame(wipeRafRef.current);
+      wipeRafRef.current = null;
+    }
+    if (wipeCommitTimeoutRef.current != null) {
+      clearTimeout(wipeCommitTimeoutRef.current);
+      wipeCommitTimeoutRef.current = null;
+    }
+    if (dipCommitTimeoutRef.current != null) {
+      clearTimeout(dipCommitTimeoutRef.current);
+      dipCommitTimeoutRef.current = null;
+    }
   }, []);
 
   // Subscribe to playout channel and window messages
   useEffect(() => {
-    const applyPlay = (p: PlayoutPayload, doFade: boolean) => {
+    const applyPlay = (p: PlayoutPayload, doFade: boolean, doWipe?: boolean, doDip?: boolean) => {
       if (eocTimerRef.current) {
         clearTimeout(eocTimerRef.current);
         eocTimerRef.current = null;
@@ -110,8 +136,28 @@ export function Stage() {
         clearTimeout(crossfadeTimeoutRef.current);
         crossfadeTimeoutRef.current = null;
       }
-      if (doFade) {
+      if (doWipe) {
         setNextPayload(p);
+        setCrossfadeTransitionKind('wipe');
+        setWipeDirection((p.wipeDirection as WipeDirection) ?? 'left');
+        setWipeRevealPct(100);
+        setCrossfadeOutOpacity(1);
+        setCrossfadeInOpacity(1);
+        crossfadeDurationRef.current = (p.transDuration ?? 0) as number;
+        setCrossfadeDuration((p.transDuration ?? 0) as number);
+        setLowerThirdVis(false);
+      } else if (doDip) {
+        setNextPayload(p);
+        setCrossfadeTransitionKind('dip');
+        setDipColor((p.dipColor as string) ?? '#000000');
+        setCrossfadeOutOpacity(1);
+        setCrossfadeInOpacity(1);
+        crossfadeDurationRef.current = (p.transDuration ?? 0) as number;
+        setCrossfadeDuration((p.transDuration ?? 0) as number);
+        setLowerThirdVis(false);
+      } else if (doFade) {
+        setNextPayload(p);
+        setCrossfadeTransitionKind('fade');
         setCrossfadeOutOpacity(1);
         setCrossfadeInOpacity(0);
         crossfadeDurationRef.current = (p.transDuration ?? 0) as number;
@@ -119,6 +165,7 @@ export function Stage() {
         setLowerThirdVis(false);
       } else {
         setNextPayload(null);
+        setCrossfadeTransitionKind('fade');
         setUseMainLayerForSolo(false);
         setPlayKey((k) => k + 1);
         setPayload(p);
@@ -156,6 +203,9 @@ export function Stage() {
       setUseMainLayerForSolo(false);
       setCrossfadeOutOpacity(1);
       setCrossfadeInOpacity(0);
+      setCrossfadeTransitionKind('fade');
+      setWipeRevealPct(100);
+      setDipColor('#000000');
       setFadeOpacity(0);
       setContentOpacity(1);
     };
@@ -165,10 +215,11 @@ export function Stage() {
     const tryApplyPending = () => {
       const pending = pendingPlayRef.current;
       if (!pending) return;
-      if (pending.doFade && !incomingImageReadyRef.current) return;
+      const needsPreload = pending.doFade || pending.doWipe || pending.doDip;
+      if (needsPreload && !incomingImageReadyRef.current) return;
       if (!bufferPassedRef.current) return;
       pendingPlayRef.current = null;
-      applyPlayRef.current?.(pending.p, pending.doFade);
+      applyPlayRef.current?.(pending.p, pending.doFade, pending.doWipe, pending.doDip);
     };
 
     const handle = (d: { type: string; duration?: number; partial?: boolean; [key: string]: unknown }) => {
@@ -182,6 +233,8 @@ export function Stage() {
         const transType = (p.transitionType as string) ?? 'cut';
         const transDur = (p.transDuration ?? 0) as number;
         const doFade = current != null && transType === 'fade' && transDur > 0;
+        const doWipe = current != null && transType === 'wipe' && transDur > 0;
+        const doDip = current != null && transType === 'dip' && transDur > 0;
         const groupAdvance = (p.groupAdvance as boolean) === true;
         const bufferMs = groupAdvance ? 0 : bufferMsRef.current;
 
@@ -190,11 +243,11 @@ export function Stage() {
           pendingApplyTimeoutRef.current = null;
         }
         preloadImageRef.current = null;
-        pendingPlayRef.current = { p, doFade };
+        pendingPlayRef.current = { p, doFade, doWipe, doDip };
         bufferPassedRef.current = false;
-        incomingImageReadyRef.current = !doFade;
+        incomingImageReadyRef.current = !doFade && !doWipe && !doDip;
 
-        if (doFade) {
+        if (doFade || doWipe || doDip) {
           const src = getImageSrc(p);
           if (src) {
             const img = new Image();
@@ -263,11 +316,16 @@ export function Stage() {
         }
       }
     };
+    messageHandlerRef.current = handle;
     const unsubCh = subscribeToPlayout(handle);
     const unsubWin = subscribeToWindowMessage(handle);
     return () => {
+      messageHandlerRef.current = null;
       unsubCh();
       unsubWin();
+      realtimeUnsubscribeRef.current?.();
+      realtimeUnsubscribeRef.current = null;
+      realtimeSendRef.current = null;
       clearTimers();
       if (pendingApplyTimeoutRef.current) {
         clearTimeout(pendingApplyTimeoutRef.current);
@@ -277,9 +335,9 @@ export function Stage() {
     };
   }, [clearTimers]);
 
-  // Fade transition: when nextPayload is set, run crossfade then commit
+  // Fade transition: when nextPayload is set and kind is fade, run opacity crossfade then commit
   useEffect(() => {
-    if (!nextPayload) return;
+    if (!nextPayload || crossfadeTransitionKind !== 'fade') return;
     const durMs = crossfadeDurationRef.current * 1000;
     const START_DELAY_MS = 80;
     const COMMIT_EXTRA_MS = 150;
@@ -295,6 +353,7 @@ export function Stage() {
       setUseMainLayerForSolo(true);
       setCrossfadeOutOpacity(1);
       setCrossfadeInOpacity(0);
+      setCrossfadeTransitionKind('fade');
       setPlayKey((k) => k + 1);
       crossfadeTimeoutRef.current = null;
     }, durMs + COMMIT_EXTRA_MS);
@@ -306,7 +365,79 @@ export function Stage() {
         crossfadeTimeoutRef.current = null;
       }
     };
-  }, [nextPayload]);
+  }, [nextPayload, crossfadeTransitionKind]);
+
+  // Wipe transition: when nextPayload is set and kind is wipe, animate clip-path then commit
+  useEffect(() => {
+    if (!nextPayload || crossfadeTransitionKind !== 'wipe') return;
+    const durationSec = crossfadeDurationRef.current;
+    const COMMIT_EXTRA_MS = 150;
+    const start = performance.now();
+    let cancelled = false;
+
+    const tick = (now: number) => {
+      if (cancelled) return;
+      const elapsed = (now - start) / 1000;
+      const pct = Math.max(0, Math.min(100, 100 - (elapsed / durationSec) * 100));
+      setWipeRevealPct(pct);
+      if (pct > 0) {
+        wipeRafRef.current = requestAnimationFrame(tick);
+      } else {
+        wipeRafRef.current = null;
+        wipeCommitTimeoutRef.current = setTimeout(() => {
+          wipeCommitTimeoutRef.current = null;
+          if (cancelled) return;
+          setPayload(nextPayload);
+          setNextPayload(null);
+          setUseMainLayerForSolo(true);
+          setCrossfadeOutOpacity(1);
+          setCrossfadeInOpacity(0);
+          setCrossfadeTransitionKind('fade');
+          setWipeRevealPct(100);
+          setPlayKey((k) => k + 1);
+        }, COMMIT_EXTRA_MS);
+      }
+    };
+    wipeRafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      cancelled = true;
+      if (wipeRafRef.current != null) {
+        cancelAnimationFrame(wipeRafRef.current);
+        wipeRafRef.current = null;
+      }
+      if (wipeCommitTimeoutRef.current != null) {
+        clearTimeout(wipeCommitTimeoutRef.current);
+        wipeCommitTimeoutRef.current = null;
+      }
+    };
+  }, [nextPayload, crossfadeTransitionKind]);
+
+  // Dip transition: CSS animations run; just commit after duration
+  useEffect(() => {
+    if (!nextPayload || crossfadeTransitionKind !== 'dip') return;
+    const durMs = crossfadeDurationRef.current * 1000;
+    const COMMIT_EXTRA_MS = 150;
+
+    dipCommitTimeoutRef.current = setTimeout(() => {
+      dipCommitTimeoutRef.current = null;
+      setPayload(nextPayload);
+      setNextPayload(null);
+      setUseMainLayerForSolo(true);
+      setCrossfadeOutOpacity(1);
+      setCrossfadeInOpacity(0);
+      setCrossfadeTransitionKind('fade');
+      setDipColor('#000000');
+      setPlayKey((k) => k + 1);
+    }, durMs + COMMIT_EXTRA_MS);
+
+    return () => {
+      if (dipCommitTimeoutRef.current != null) {
+        clearTimeout(dipCommitTimeoutRef.current);
+        dipCommitTimeoutRef.current = null;
+      }
+    };
+  }, [nextPayload, crossfadeTransitionKind]);
 
   // EOC timers when payload is set (skip during crossfade)
   useEffect(() => {
@@ -488,6 +619,10 @@ export function Stage() {
   const centerW = (mo as { splitCenterWidth?: number }).splitCenterWidth ?? 40;
   const centerH = (mo as { splitCenterHeight?: number }).splitCenterHeight ?? 45;
   const splitImgWidth = (mo as { splitImgWidth?: number }).splitImgWidth ?? 55;
+  const splitShowBorder = (mo as { split?: { showBorder?: boolean } }).split?.showBorder ?? false;
+  const splitBorderColor = (mo as { split?: { borderColor?: string } }).split?.borderColor ?? '#ffffff';
+  const splitBorderWidth = (mo as { split?: { borderWidth?: number } }).split?.borderWidth ?? 2;
+  const splitBorderStyle = splitShowBorder ? { border: `${splitBorderWidth}px solid ${splitBorderColor}` } : {};
 
   /** Main layer shows incoming during crossfade, then solo; same key after commit so it doesn't remount/jump */
   const displayPayload = nextPayload ?? payload;
@@ -519,6 +654,16 @@ export function Stage() {
     if (window.opener && !window.opener.closed) {
       window.opener.postMessage({ type: 'connect', code }, '*');
     }
+    connectToPlayoutChannelAsPlayout(code, (msg) => messageHandlerRef.current?.(msg))
+      .then(({ send, unsubscribe }) => {
+        realtimeSendRef.current = send;
+        realtimeUnsubscribeRef.current = unsubscribe;
+      })
+      .catch((err) => {
+        if (err?.message !== 'Supabase not configured') {
+          setCodeError(err instanceof Error ? err.message : 'Connection failed');
+        }
+      });
   }, [codeInput]);
 
   useEffect(() => {
@@ -537,6 +682,7 @@ export function Stage() {
     const ch = getPlayoutChannel();
     const id = setInterval(() => {
       ch.postMessage({ type: 'heartbeat' });
+      realtimeSendRef.current?.({ type: 'heartbeat' });
     }, HEARTBEAT_INTERVAL_MS);
     return () => clearInterval(id);
   }, [connectionAccepted]);
@@ -726,18 +872,34 @@ export function Stage() {
         }}
       />
 
+      {/* Dip-to-color layer: behind content during dip transition */}
+      {nextPayload && crossfadeTransitionKind === 'dip' && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 9,
+            pointerEvents: 'none',
+            background: dipColor,
+          }}
+        />
+      )}
+
       {/* Current/payload layer: when solo and !useMainLayerForSolo this is the only layer; when crossfade this is outgoing. Same key+structure so no jump at fade start. */}
       {payload && imgSrc && (nextPayload || !useMainLayerForSolo) && (
         <div
           key={playKey}
-          className="play-layer"
+          className={`play-layer ${nextPayload && crossfadeTransitionKind === 'dip' ? 'trans-dip-out' : ''}`}
           style={{
             position: 'absolute',
             inset: 0,
             zIndex: 10,
             pointerEvents: 'none',
-            opacity: nextPayload ? crossfadeOutOpacity : contentOpacity,
-            transition: nextPayload ? `opacity ${crossfadeDuration}s ease` : contentTransition,
+            ...(nextPayload && crossfadeTransitionKind === 'dip' ? { ['--td' as string]: `${crossfadeDuration}s` } : {}),
+            ...(crossfadeTransitionKind !== 'dip' ? {
+              opacity: nextPayload ? crossfadeOutOpacity : contentOpacity,
+              transition: nextPayload ? `opacity ${crossfadeDuration}s ease` : contentTransition,
+            } : {}),
           }}
         >
           {payload.mode === 'fullscreen' && (
@@ -796,7 +958,7 @@ export function Stage() {
                 <div className="split-bg-layer" style={{ backgroundImage: `url(${imgSrc})` }} />
                 {payload.captionOn ? (
                   <div className={`split-content split-content--img-only ${photoSide === 'right' ? 'split-content--photo-right' : ''} ${isCenter ? 'split-content--photo-center' : ''}`} style={isCenter ? { ['--split-center-img-h' as string]: `${centerH}%` } : { ['--split-img-width' as string]: `${splitImgWidth}%` }}>
-                    <div className={isCenter ? 'split-img-wrap split-img-wrap--center' : 'split-img-wrap'} style={isCenter ? { width: `${centerW}%`, height: `${centerH}%` } : { width: `${splitImgWidth}%` }}>
+                    <div className={isCenter ? 'split-img-wrap split-img-wrap--center' : 'split-img-wrap'} style={{ ...(isCenter ? { width: `${centerW}%`, height: `${centerH}%` } : { width: `${splitImgWidth}%` }), ...splitBorderStyle }}>
                       <div className="split-kb-inner" ref={splitKbRef}>
                         <img src={imgSrc} alt="" decoding="async" style={{ objectFit: objFit as 'cover' | 'contain' }} />
                       </div>
@@ -804,7 +966,7 @@ export function Stage() {
                   </div>
                 ) : (
                   <div className="split-content split-content--full">
-                    <div className="split-img-wrap split-img-wrap--full">
+                    <div className="split-img-wrap split-img-wrap--full" style={splitBorderStyle}>
                       <div className="split-kb-inner" ref={splitKbRef}>
                         <img src={imgSrc} alt="" decoding="async" style={{ objectFit: objFit as 'cover' | 'contain' }} />
                       </div>
@@ -852,14 +1014,18 @@ export function Stage() {
       {displayPayload && imgSrcDisplay && (nextPayload || useMainLayerForSolo) && (
         <div
           key={nextPayload ? playKey + 1 : playKey}
-          className="play-layer"
+          className={`play-layer ${nextPayload && crossfadeTransitionKind === 'dip' ? 'trans-dip-in' : ''}`}
           style={{
             position: 'absolute',
             inset: 0,
             zIndex: 11,
             pointerEvents: 'none',
-            opacity: nextPayload ? crossfadeInOpacity : contentOpacity,
-            transition: nextPayload ? `opacity ${crossfadeDuration}s ease` : contentTransition,
+            ...(nextPayload && crossfadeTransitionKind === 'dip' ? { ['--td' as string]: `${crossfadeDuration}s` } : {}),
+            ...(crossfadeTransitionKind !== 'dip' ? {
+              opacity: nextPayload && crossfadeTransitionKind === 'wipe' ? 1 : (nextPayload ? crossfadeInOpacity : contentOpacity),
+              transition: nextPayload && crossfadeTransitionKind === 'wipe' ? 'none' : (nextPayload ? `opacity ${crossfadeDuration}s ease` : contentTransition),
+              clipPath: nextPayload && crossfadeTransitionKind === 'wipe' ? getWipeClipPath(wipeDirection, wipeRevealPct) : undefined,
+            } : {}),
           }}
         >
           {displayPayload.mode === 'fullscreen' && (
@@ -912,13 +1078,17 @@ export function Stage() {
               </div>
             );
           })()}
-          {displayPayload.mode === 'split' && (
+          {displayPayload.mode === 'split' && (() => {
+            const splitD = moDisplay as { split?: { showBorder?: boolean; borderColor?: string; borderWidth?: number }; splitImageSide?: string; splitCenterWidth?: number; splitCenterHeight?: number; splitImgWidth?: number };
+            const splitShowBorderD = splitD.split?.showBorder ?? false;
+            const splitBorderStyleD = splitShowBorderD ? { border: `${splitD.split?.borderWidth ?? 2}px solid ${splitD.split?.borderColor ?? '#ffffff'}` } : {};
+            return (
             <>
               <div className="kb-layer">
                 <div className="split-bg-layer" style={{ backgroundImage: `url(${imgSrcDisplay})` }} />
                 {displayPayload.captionOn ? (
-                  <div className={`split-content split-content--img-only ${(moDisplay as { splitImageSide?: string }).splitImageSide === 'right' ? 'split-content--photo-right' : ''} ${(moDisplay as { splitImageSide?: string }).splitImageSide === 'center' ? 'split-content--photo-center' : ''}`} style={(moDisplay as { splitImageSide?: string }).splitImageSide === 'center' ? { ['--split-center-img-h' as string]: `${(moDisplay as { splitCenterHeight?: number }).splitCenterHeight ?? 45}%` } : { ['--split-img-width' as string]: `${(moDisplay as { splitImgWidth?: number }).splitImgWidth ?? 55}%` }}>
-                    <div className={(moDisplay as { splitImageSide?: string }).splitImageSide === 'center' ? 'split-img-wrap split-img-wrap--center' : 'split-img-wrap'} style={(moDisplay as { splitImageSide?: string }).splitImageSide === 'center' ? { width: `${(moDisplay as { splitCenterWidth?: number }).splitCenterWidth ?? 40}%`, height: `${(moDisplay as { splitCenterHeight?: number }).splitCenterHeight ?? 45}%` } : { width: `${(moDisplay as { splitImgWidth?: number }).splitImgWidth ?? 55}%` }}>
+                  <div className={`split-content split-content--img-only ${splitD.splitImageSide === 'right' ? 'split-content--photo-right' : ''} ${splitD.splitImageSide === 'center' ? 'split-content--photo-center' : ''}`} style={splitD.splitImageSide === 'center' ? { ['--split-center-img-h' as string]: `${splitD.splitCenterHeight ?? 45}%` } : { ['--split-img-width' as string]: `${splitD.splitImgWidth ?? 55}%` }}>
+                    <div className={splitD.splitImageSide === 'center' ? 'split-img-wrap split-img-wrap--center' : 'split-img-wrap'} style={{ ...(splitD.splitImageSide === 'center' ? { width: `${splitD.splitCenterWidth ?? 40}%`, height: `${splitD.splitCenterHeight ?? 45}%` } : { width: `${splitD.splitImgWidth ?? 55}%` }), ...splitBorderStyleD }}>
                       <div className="split-kb-inner" ref={splitKbRefNext}>
                         <img src={imgSrcDisplay} alt="" decoding="async" style={{ objectFit: (moDisplay.objectFit as 'cover' | 'contain') ?? 'cover' }} />
                       </div>
@@ -926,7 +1096,7 @@ export function Stage() {
                   </div>
                 ) : (
                   <div className="split-content split-content--full">
-                    <div className="split-img-wrap split-img-wrap--full">
+                    <div className="split-img-wrap split-img-wrap--full" style={splitBorderStyleD}>
                       <div className="split-kb-inner" ref={splitKbRefNext}>
                         <img src={imgSrcDisplay} alt="" decoding="async" style={{ objectFit: (moDisplay.objectFit as 'cover' | 'contain') ?? 'cover' }} />
                       </div>
@@ -953,7 +1123,8 @@ export function Stage() {
                 </div>
               )}
             </>
-          )}
+            );
+          })()}
           {displayPayload.captionOn && displayPayload.mode !== 'split' && (
             <div className={`lower-third pos-${((csDisplay as { position?: string }).position as string) || 'bottom'} lt-justify-${((csDisplay as { justify?: string }).justify as string) ?? 'left'}`} style={{ background: `linear-gradient(transparent, ${hexToRgba(((csDisplay as { bgColor?: string }).bgColor) ?? '#000000', (((csDisplay as { bgOpacity?: number }).bgOpacity) ?? 75) / 100)})` }}>
               <div className="lower-third-inner" style={{ transformOrigin: (csDisplay as { justify?: string }).justify === 'center' ? 'bottom center' : (csDisplay as { justify?: string }).justify === 'right' ? 'bottom right' : 'bottom left', transform: `scale(${Math.max(0.5, Math.min(2, (csDisplay as { textScale?: number }).textScale ?? 1))}) translateY(${-((csDisplay as { offsetY?: number }).offsetY ?? 0)}px)` }}>

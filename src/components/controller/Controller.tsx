@@ -1,12 +1,12 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Cue, Section, KbPoint } from '../../lib/types';
 import type { ModeOpts, CaptionStyle, EndOfCue, TransitionType, WipeDirection } from '../../lib/types';
-import { sendToPlayout, sendPlayPayload, subscribeToPlayout, DISCONNECT_AFTER_MS, CONNECTED_CHECK_INTERVAL_MS } from '../../lib/playoutChannel';
+import { sendToPlayout, sendPlayPayload, subscribeToPlayout, joinPlayoutChannelAsController, DISCONNECT_AFTER_MS, CONNECTED_CHECK_INTERVAL_MS } from '../../lib/playoutChannel';
 import { buildPlayoutPayload } from '../../lib/buildPlayoutPayload';
 import { DEFAULT_MODE_OPTS, DEFAULT_CAPTION_STYLE } from '../../lib/types';
 import { getCueHoldDuration, getCueEOC, getCueFadeIn, getCueFadeOut, getCueModeOpts, getCueCaptionStyle, kbPointToXYZ, xyzToKbPoint, getCueStartXYZ, getCueEndXYZ, getKBScaleVar, getWipeClipPath, getCustomKBTransformFromXYZ } from '../../lib/controllerHelpers';
 import { runImageAnalysis } from '../../lib/imageAnalysis';
-import { listProjects, loadProject, saveProject, type ProjectRow } from '../../lib/projects';
+import { listProjects, loadProject, saveProject, deleteProject, type ProjectRow } from '../../lib/projects';
 import { uploadCueImage, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
 import { useAuth } from '../../contexts/AuthContext';
 import { MonitorLayer } from './MonitorLayer';
@@ -37,8 +37,24 @@ function getSectionsMatchingQuery(query: string): SectionKey[] {
 }
 
 const TRANS_TYPES: TransitionType[] = ['cut', 'fade', 'wipe', 'dip'];
-/** Cardinal directions for wipe (used in UI for now). */
-const WIPE_DIRECTIONS_CARDINAL: WipeDirection[] = ['left', 'right', 'up', 'down'];
+/** All wipe directions: cardinal then diagonal. */
+const WIPE_DIRECTIONS_ALL: WipeDirection[] = [
+  'left', 'right', 'up', 'down',
+  'diagonal-tl-br', 'diagonal-br-tl', 'diagonal-tr-bl', 'diagonal-bl-tr',
+];
+function wipeDirectionLabel(d: WipeDirection): string {
+  switch (d) {
+    case 'left': return '← Left';
+    case 'right': return '→ Right';
+    case 'up': return '↑ Up';
+    case 'down': return '↓ Down';
+    case 'diagonal-tl-br': return '↘ TL→BR';
+    case 'diagonal-br-tl': return '↖ BR→TL';
+    case 'diagonal-tr-bl': return '↙ TR→BL';
+    case 'diagonal-bl-tr': return '↗ BL→TR';
+    default: return String(d);
+  }
+}
 const KB_OPTIONS = ['auto', 'zoom-in', 'zoom-out', 'pan-right', 'pan-left', 'drift', 'custom'] as const;
 
 const KB_ASPECT = 16 / 9;
@@ -291,6 +307,10 @@ export function Controller() {
   });
   const storeImagesInCloud = storeImagesMode === 'cloud';
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectStoreMode, setNewProjectStoreMode] = useState<StoreImagesMode>('local');
+  const [newProjectAnalyzeOnImport, setNewProjectAnalyzeOnImport] = useState(false);
   const [deleteCueModal, setDeleteCueModal] = useState<{ cue: Cue } | null>(null);
   const [renameCueModal, setRenameCueModal] = useState<Cue | null>(null);
   const [renameCueInput, setRenameCueInput] = useState('');
@@ -306,9 +326,10 @@ export function Controller() {
   });
   const [analyzingCueId, setAnalyzingCueId] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
-  const [currentProjectName, setCurrentProjectName] = useState('Untitled');
+  const [currentProjectName, setCurrentProjectName] = useState('');
   const [projectList, setProjectList] = useState<ProjectRow[]>([]);
   const [projectListOpen, setProjectListOpen] = useState(false);
+  const [deleteProjectModal, setDeleteProjectModal] = useState<ProjectRow | null>(null);
   const [projectSaveError, setProjectSaveError] = useState<string | null>(null);
   const [timeElapsed, setTimeElapsed] = useState('0:00');
   const [timeRemain, setTimeRemain] = useState('—');
@@ -318,8 +339,8 @@ export function Controller() {
   const [programCrossfadeOutOpacity, setProgramCrossfadeOutOpacity] = useState(1);
   const [programCrossfadeInOpacity, setProgramCrossfadeInOpacity] = useState(0);
   const programCrossfadeDurationRef = useRef(0.8);
-  /** 'fade' | 'wipe' when we're doing a smooth transition; null for cut. */
-  const [programTransitionKind, setProgramTransitionKind] = useState<'fade' | 'wipe' | null>(null);
+  /** 'fade' | 'wipe' | 'dip' when we're doing a smooth transition; null for cut. */
+  const [programTransitionKind, setProgramTransitionKind] = useState<'fade' | 'wipe' | 'dip' | null>(null);
   /** Wipe: 100 = incoming fully clipped (hidden), 0 = fully revealed. Animated 100→0 over duration. */
   const [programWipeRevealPct, setProgramWipeRevealPct] = useState(100);
   /** EOC fade on program monitor: when true we're fading program view to black or transparent. */
@@ -438,17 +459,27 @@ export function Controller() {
   }, [settingsSearchQuery, visibleSectionKeys.join(',')]);
 
   useEffect(() => {
-    return subscribeToPlayout((msg) => {
+    const onMsg = (msg: { type: string; code?: string }) => {
       if (msg.type === 'connect' && 'code' in msg && msg.code === connectionCodeRef.current) {
         playoutLastSeenRef.current = Date.now();
         setPlayoutConnected(true);
         sendToPlayout({ type: 'connectionAccepted' }, playoutWindowRef.current);
       }
-      if (msg.type === 'heartbeat') {
-        playoutLastSeenRef.current = Date.now();
-      }
-    });
+      if (msg.type === 'heartbeat') playoutLastSeenRef.current = Date.now();
+    };
+    return subscribeToPlayout(onMsg);
   }, []);
+
+  useEffect(() => {
+    return joinPlayoutChannelAsController(connectionCode, (msg) => {
+      if (msg.type === 'connect' && 'code' in msg && msg.code === connectionCodeRef.current) {
+        playoutLastSeenRef.current = Date.now();
+        setPlayoutConnected(true);
+        sendToPlayout({ type: 'connectionAccepted' }, playoutWindowRef.current);
+      }
+      if (msg.type === 'heartbeat') playoutLastSeenRef.current = Date.now();
+    });
+  }, [connectionCode]);
 
   useEffect(() => {
     if (!playoutConnected) return;
@@ -482,13 +513,15 @@ export function Controller() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (settingsModalOpen) setSettingsModalOpen(false);
+      else if (newProjectModalOpen) setNewProjectModalOpen(false);
+      else if (deleteProjectModal) setDeleteProjectModal(null);
       else if (deleteCueModal) setDeleteCueModal(null);
       else if (renameCueModal) setRenameCueModal(null);
       else if (cloudBrowserOpen) setCloudBrowserOpen(false);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [settingsModalOpen, deleteCueModal, renameCueModal, cloudBrowserOpen]);
+  }, [settingsModalOpen, newProjectModalOpen, deleteProjectModal, deleteCueModal, renameCueModal, cloudBrowserOpen]);
 
   useEffect(() => {
     if (renameCueModal) setRenameCueInput(renameCueModal.displayName ?? renameCueModal.name);
@@ -549,7 +582,7 @@ export function Controller() {
     if (previewCueId) {
       setCues((prev) => prev.map((c) => {
         if (c.id !== previewCueId) return c;
-        const defaults = { splitImgWidth: 55, splitImageSide: 'left' as const, splitCenterWidth: 40, splitCenterHeight: 45, splitTextAlign: 'left' as const };
+        const defaults = { splitImgWidth: 55, splitImageSide: 'left' as const, splitCenterWidth: 40, splitCenterHeight: 45, splitTextAlign: 'left' as const, showBorder: false, borderColor: '#ffffff', borderWidth: 2 };
         const splitBase = { ...defaults, ...(c.modeOpts?.split ?? modeOpts.split) };
         const base = c.modeOpts
           ? { ...c.modeOpts, fullscreen: { ...c.modeOpts.fullscreen }, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...c.modeOpts.blurbg }, split: splitBase }
@@ -798,7 +831,7 @@ export function Controller() {
     const idx = flatCueIds.indexOf(previewCueId);
     const transType = (previewCue.transitionType as TransitionType) ?? transitionType;
     const transDur = previewCue.transDuration != null ? previewCue.transDuration : transDuration;
-    const useSmoothTransition = (transType === 'fade' || transType === 'wipe') && transDur > 0 && isLive && programCue != null;
+    const useSmoothTransition = (transType === 'fade' || transType === 'wipe' || transType === 'dip') && transDur > 0 && isLive && programCue != null;
 
     if (useSmoothTransition) {
       pendingProgramTakeRef.current = { itemIdx: idx >= 0 ? idx : 0, imageIdx: 0 };
@@ -810,7 +843,7 @@ export function Controller() {
     if (useSmoothTransition) {
       setProgramOutgoingCue(programCue);
       setProgramCrossfadeNextCue(previewCue);
-      setProgramTransitionKind(transType === 'wipe' ? 'wipe' : 'fade');
+      setProgramTransitionKind(transType === 'wipe' ? 'wipe' : transType === 'dip' ? 'dip' : 'fade');
       if (transType === 'wipe') setProgramWipeRevealPct(100);
       programCrossfadeDurationRef.current = transDur;
       setProgramCrossfadeDuration(transDur);
@@ -1069,13 +1102,23 @@ export function Controller() {
   };
 
   const handleNewProject = () => {
+    setNewProjectName('');
+    setNewProjectStoreMode(storeImagesMode);
+    setNewProjectAnalyzeOnImport(analyzeOnImport);
+    setNewProjectModalOpen(true);
+  };
+
+  const handleCreateNewProject = () => {
     setCurrentProjectId(null);
-    setCurrentProjectName('Untitled');
+    setCurrentProjectName(newProjectName.trim() || 'Untitled');
+    setStoreImagesMode(newProjectStoreMode);
+    setAnalyzeOnImport(newProjectAnalyzeOnImport);
     setCues([]);
     setSections([{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }]);
     setProgramCueItemIdx(-1);
     setPreviewCueId(null);
     setProjectSaveError(null);
+    setNewProjectModalOpen(false);
   };
 
   const handleSaveProject = async () => {
@@ -1110,12 +1153,29 @@ export function Controller() {
       setCues(payload.cues);
       setSections(payload.sections);
       setCurrentProjectId(id);
-      setCurrentProjectName(projectList.find((p) => p.id === id)?.name ?? 'Untitled');
+      setCurrentProjectName(projectList.find((p) => p.id === id)?.name ?? '');
       setProgramCueItemIdx(-1);
       const firstId = getFlatCueIds(payload.sections)[0] ?? null;
       setPreviewCueId(firstId);
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Load failed');
+    }
+  };
+
+  const handleConfirmDeleteProject = async () => {
+    const project = deleteProjectModal;
+    if (!project) return;
+    setProjectSaveError(null);
+    try {
+      await deleteProject(project.id);
+      setProjectList((prev) => prev.filter((p) => p.id !== project.id));
+      if (currentProjectId === project.id) {
+        setCurrentProjectId(null);
+        setCurrentProjectName('');
+      }
+      setDeleteProjectModal(null);
+    } catch (e) {
+      setProjectSaveError(e instanceof Error ? e.message : 'Delete failed');
     }
   };
 
@@ -1188,22 +1248,24 @@ export function Controller() {
                 ⚙ Settings
               </button>
             </div>
-            <div style={{ marginBottom: 4 }}>
-              <input
-                type="text"
-                value={currentProjectName}
-                onChange={(e) => setCurrentProjectName(e.target.value)}
-                placeholder="Untitled"
-                className="project-name-input"
-                title="Project name"
-              />
+            <div className="current-project-label" title="Active project">
+              Current: {currentProjectName || 'No project'}
             </div>
             {projectListOpen && projectList.length > 0 && (
               <ul className="project-list">
                 {projectList.map((p) => (
-                  <li key={p.id}>
+                  <li key={p.id} className="project-list-item">
                     <button type="button" className="project-list-btn" onClick={() => handleLoadProject(p.id)}>
                       {p.name}
+                    </button>
+                    <button
+                      type="button"
+                      className="project-list-del"
+                      onClick={(e) => { e.stopPropagation(); setDeleteProjectModal(p); }}
+                      title="Delete project"
+                      aria-label={`Delete ${p.name}`}
+                    >
+                      ✕
                     </button>
                   </li>
                 ))}
@@ -1216,16 +1278,16 @@ export function Controller() {
           <div className="sec">
             <div className="sec-label">
               Load Media
-              <span style={{ display: 'flex', gap: 5 }}>
+              <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <button
                   type="button"
-                  className="cue-act-btn"
-                  style={{ opacity: 1, padding: '2px 8px', fontSize: 8 }}
+                  className="btn-sm"
                   onClick={addSection}
+                  title="Create a new section"
                 >
-                  + Group
+                  + New Section
                 </button>
-                <button type="button" className="cue-act-btn" style={{ opacity: 1, color: 'var(--text3)' }} onClick={clearCues}>
+                <button type="button" className="btn-sm" onClick={clearCues}>
                   Clear
                 </button>
               </span>
@@ -1382,11 +1444,6 @@ export function Controller() {
                 })
               )}
             </ul>
-            <div style={{ padding: '6px 10px' }}>
-              <button type="button" className="btn-sm" onClick={addSection} title="New section for organization">
-                ＋ New section
-              </button>
-            </div>
           </div>
         </div>
 
@@ -1478,18 +1535,33 @@ export function Controller() {
                       transition: programEocFadeActive && programEocFadeTo === 'transparent' ? `opacity ${programEocFadeDuration}s ease` : 'none',
                     }}
                   >
-                    {/* Program monitor: outgoing layer only during fade; same key as pre-fade single layer so it doesn't remount/jump */}
+                    {/* Dip-to-color layer: visible only during dip transition, behind both content layers */}
+                    {programTransitionKind === 'dip' && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          zIndex: 8,
+                          pointerEvents: 'none',
+                          background: (effectiveProgramCue?.dipColor as string) ?? dipColor,
+                        }}
+                      />
+                    )}
+                    {/* Program monitor: outgoing layer only during fade/wipe/dip; same key as pre-fade single layer so it doesn't remount/jump */}
                     {isLive && programCrossfadeNextCue && (programOutgoingCue ?? programCue) && (
                       <div
                         key={`pgm-${programCueItemIdx}`}
-                        className="play-layer"
+                        className={`play-layer ${programTransitionKind === 'dip' ? 'trans-dip-out' : ''}`}
                         style={{
                           position: 'absolute',
                           inset: 0,
                           zIndex: 10,
                           pointerEvents: 'none',
-                          opacity: programTransitionKind === 'wipe' ? 1 : programCrossfadeOutOpacity,
-                          transition: programTransitionKind === 'wipe' ? 'none' : `opacity ${programCrossfadeDuration}s ease`,
+                          ...(programTransitionKind === 'dip' ? { ['--td' as string]: `${programCrossfadeDuration}s` } : {}),
+                          ...(programTransitionKind !== 'dip' ? {
+                            opacity: programTransitionKind === 'wipe' ? 1 : programCrossfadeOutOpacity,
+                            transition: programTransitionKind === 'wipe' ? 'none' : `opacity ${programCrossfadeDuration}s ease`,
+                          } : {}),
                         }}
                       >
                         <MonitorLayer
@@ -1506,19 +1578,22 @@ export function Controller() {
                         />
                       </div>
                     )}
-                    {/* Program monitor: main layer (incoming during fade/wipe, then solo; same key so no remount when transition ends) */}
+                    {/* Program monitor: main layer (incoming during fade/wipe/dip, then solo; same key so no remount when transition ends) */}
                     {isLive && (programCue || programOutgoingCue || programCrossfadeNextCue) && effectiveProgramCue && (
                       <div
                         key={`pgm-${effectiveProgramItemIdx}`}
-                        className="play-layer"
+                        className={`play-layer ${programTransitionKind === 'dip' ? 'trans-dip-in' : ''}`}
                         style={{
                           position: 'absolute',
                           inset: 0,
                           zIndex: 11,
                           pointerEvents: 'none',
-                          opacity: programTransitionKind === 'wipe' ? 1 : (programCrossfadeNextCue ? programCrossfadeInOpacity : 1),
-                          transition: programTransitionKind === 'wipe' ? 'none' : (programCrossfadeNextCue ? `opacity ${programCrossfadeDuration}s ease` : 'none'),
-                          ...(programTransitionKind === 'wipe' ? { clipPath: getWipeClipPath((effectiveProgramCue.wipeDirection as WipeDirection) ?? wipeDirection, programWipeRevealPct) } : {}),
+                          ...(programTransitionKind === 'dip' ? { ['--td' as string]: `${programCrossfadeDuration}s` } : {}),
+                          ...(programTransitionKind !== 'dip' ? {
+                            opacity: programTransitionKind === 'wipe' ? 1 : (programCrossfadeNextCue ? programCrossfadeInOpacity : 1),
+                            transition: programTransitionKind === 'wipe' ? 'none' : (programCrossfadeNextCue ? `opacity ${programCrossfadeDuration}s ease` : 'none'),
+                            ...(programTransitionKind === 'wipe' ? { clipPath: getWipeClipPath((effectiveProgramCue.wipeDirection as WipeDirection) ?? wipeDirection, programWipeRevealPct) } : {}),
+                          } : {}),
                         }}
                       >
                         <MonitorLayer
@@ -1912,6 +1987,20 @@ export function Controller() {
                       ))}
                     </div>
                   </div>
+                  <div className="ctrl-row">
+                    <div className="ctrl-label">Border <em>{panelModeOpts.split?.showBorder ? 'On' : 'Off'}</em></div>
+                    <div className="sel-row-2" style={{ marginTop: 4 }}>
+                      <button type="button" className={`sel-btn ${!panelModeOpts.split?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, split: { ...DEFAULT_MODE_OPTS.split, ...m.split, showBorder: false } }))}>OFF</button>
+                      <button type="button" className={`sel-btn ${panelModeOpts.split?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, split: { ...DEFAULT_MODE_OPTS.split, ...m.split, showBorder: true } }))}>ON</button>
+                    </div>
+                  </div>
+                  {(panelModeOpts.split?.showBorder) && (
+                    <div className="ctrl-row" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <div className="ctrl-label">Border width <em>{panelModeOpts.split?.borderWidth ?? 2}px</em></div>
+                      <input type="range" min={1} max={12} value={panelModeOpts.split?.borderWidth ?? 2} onChange={(e) => setPanelModeOpts((m) => ({ ...m, split: { ...DEFAULT_MODE_OPTS.split, ...m.split, borderWidth: Number(e.target.value) } }))} />
+                      <input type="color" value={panelModeOpts.split?.borderColor ?? '#ffffff'} onChange={(e) => setPanelModeOpts((m) => ({ ...m, split: { ...DEFAULT_MODE_OPTS.split, ...m.split, borderColor: e.target.value } }))} style={{ width: 40, height: 28, padding: 0, border: '1px solid var(--border2)', borderRadius: 4 }} />
+                    </div>
+                  )}
                 </div>
                 </>
                 )}
@@ -2114,7 +2203,7 @@ export function Controller() {
                 {panelTransitionType === 'wipe' && (
                 <div className="ctrl-row" style={{ marginTop: 8, marginBottom: 0, flexWrap: 'wrap', gap: 6 }}>
                   <div className="ctrl-label" style={{ width: '100%' }}>Wipe direction</div>
-                  {WIPE_DIRECTIONS_CARDINAL.map((d) => (
+                  {WIPE_DIRECTIONS_ALL.map((d) => (
                     <button
                       key={d}
                       type="button"
@@ -2122,7 +2211,7 @@ export function Controller() {
                       onClick={() => setPanelWipeDirection(d)}
                       title={d}
                     >
-                      {d === 'left' ? '← Left' : d === 'right' ? '→ Right' : d === 'up' ? '↑ Up' : '↓ Down'}
+                      {wipeDirectionLabel(d)}
                     </button>
                   ))}
                 </div>
@@ -2466,6 +2555,136 @@ export function Controller() {
               <p className="settings-hint">
                 Local: data in project. Hybrid: local + import from cloud. Cloud: upload to your account.
               </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {newProjectModalOpen && (
+        <div
+          className="settings-modal-overlay"
+          onClick={() => setNewProjectModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-project-modal-title"
+        >
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-modal-header">
+              <h2 id="new-project-modal-title" className="settings-modal-title">New project</h2>
+              <button
+                type="button"
+                className="settings-modal-close"
+                onClick={() => setNewProjectModalOpen(false)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="settings-modal-body">
+              <div className="settings-row">
+                <span className="settings-label">Project name</span>
+                <input
+                  type="text"
+                  className="project-name-input"
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  placeholder="My project"
+                  autoFocus
+                />
+              </div>
+              <div className="settings-row">
+                <span className="settings-label">Store images</span>
+                <div className="settings-control">
+                  <label className="settings-radio">
+                    <input
+                      type="radio"
+                      name="newProjectStore"
+                      checked={newProjectStoreMode === 'local'}
+                      onChange={() => setNewProjectStoreMode('local')}
+                    />
+                    Local
+                  </label>
+                  <label className={`settings-radio ${!user ? 'disabled' : ''}`}>
+                    <input
+                      type="radio"
+                      name="newProjectStore"
+                      checked={newProjectStoreMode === 'hybrid'}
+                      onChange={() => setNewProjectStoreMode('hybrid')}
+                      disabled={!user}
+                    />
+                    Hybrid {!user && '(sign in)'}
+                  </label>
+                  <label className={`settings-radio ${!user ? 'disabled' : ''}`}>
+                    <input
+                      type="radio"
+                      name="newProjectStore"
+                      checked={newProjectStoreMode === 'cloud'}
+                      onChange={() => setNewProjectStoreMode('cloud')}
+                      disabled={!user}
+                    />
+                    Cloud {!user && '(sign in)'}
+                  </label>
+                </div>
+              </div>
+              <p className="settings-hint">
+                Local: data in project. Hybrid: local + import from cloud. Cloud: upload to your account.
+              </p>
+              <div className="settings-row">
+                <span className="settings-label">Import</span>
+                <label className="settings-check">
+                  <input
+                    type="checkbox"
+                    checked={newProjectAnalyzeOnImport}
+                    onChange={(e) => setNewProjectAnalyzeOnImport(e.target.checked)}
+                  />
+                  Analyze on import
+                </label>
+              </div>
+              <div className="settings-modal-actions">
+                <button type="button" className="btn-sm" onClick={() => setNewProjectModalOpen(false)}>
+                  Cancel
+                </button>
+                <button type="button" className="btn-sm primary" onClick={handleCreateNewProject}>
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteProjectModal && (
+        <div
+          className="settings-modal-overlay"
+          onClick={() => setDeleteProjectModal(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-project-modal-title"
+        >
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="settings-modal-header">
+              <h2 id="delete-project-modal-title" className="settings-modal-title">Delete project</h2>
+              <button
+                type="button"
+                className="settings-modal-close"
+                onClick={() => setDeleteProjectModal(null)}
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="settings-modal-body">
+              <p className="settings-hint">
+                Delete &quot;{deleteProjectModal.name}&quot;? This cannot be undone.
+              </p>
+              <div className="settings-modal-actions">
+                <button type="button" className="btn-sm" onClick={() => setDeleteProjectModal(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="btn-sm danger" onClick={handleConfirmDeleteProject}>
+                  Delete
+                </button>
+              </div>
             </div>
           </div>
         </div>

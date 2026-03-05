@@ -282,6 +282,8 @@ export function MonitorLayer({
                 const isCenter = photoSide === 'center';
                 const centerH = modeOpts.split?.splitCenterHeight ?? mo.split?.splitCenterHeight ?? 45;
                 const imgWidth = mo.split?.splitImgWidth ?? 55;
+                const showBorder = modeOpts.split?.showBorder ?? mo.split?.showBorder ?? false;
+                const borderStyle = showBorder ? { border: `${modeOpts.split?.borderWidth ?? mo.split?.borderWidth ?? 2}px solid ${modeOpts.split?.borderColor ?? mo.split?.borderColor ?? '#ffffff'}` } : {};
                 return (
                   <div
                     className={`split-content split-content--img-only ${photoSide === 'right' ? 'split-content--photo-right' : ''} ${isCenter ? 'split-content--photo-center' : ''}`}
@@ -293,9 +295,12 @@ export function MonitorLayer({
                   >
                     <div
                       className={isCenter ? 'split-img-wrap split-img-wrap--center' : 'split-img-wrap'}
-                      style={isCenter
-                        ? { width: `${modeOpts.split?.splitCenterWidth ?? mo.split?.splitCenterWidth ?? 40}%`, height: `${centerH}%` }
-                        : { width: `${imgWidth}%` }}
+                      style={{
+                        ...(isCenter
+                          ? { width: `${modeOpts.split?.splitCenterWidth ?? mo.split?.splitCenterWidth ?? 40}%`, height: `${centerH}%` }
+                          : { width: `${imgWidth}%` }),
+                        ...borderStyle,
+                      }}
                     >
                       <div className="split-kb-inner" ref={splitKbRef}>
                         <img
@@ -310,7 +315,10 @@ export function MonitorLayer({
               })()
             ) : (
               <div className="split-content split-content--full">
-                <div className="split-img-wrap split-img-wrap--full">
+                <div
+                  className="split-img-wrap split-img-wrap--full"
+                  style={(modeOpts.split?.showBorder ?? mo.split?.showBorder) ? { border: `${modeOpts.split?.borderWidth ?? mo.split?.borderWidth ?? 2}px solid ${modeOpts.split?.borderColor ?? mo.split?.borderColor ?? '#ffffff'}` } : {}}
+                >
                   <div className="split-kb-inner" ref={splitKbRef}>
                     <img
                       src={displaySrc}

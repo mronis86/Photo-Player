@@ -87,3 +87,9 @@ export async function saveProject(
   if (error) throw error;
   return (data?.id as string) ?? projectId ?? '';
 }
+
+export async function deleteProject(id: string): Promise<void> {
+  if (!supabase) throw new Error('Supabase not configured');
+  const { error } = await supabase.from('projects').delete().eq('id', id);
+  if (error) throw error;
+}

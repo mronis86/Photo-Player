@@ -83,7 +83,16 @@ export interface ModeOpts {
     borderColor: string;
     borderWidth: number;
   };
-  split: { splitImgWidth: number; splitImageSide: 'left' | 'right' | 'center'; splitCenterWidth: number; splitCenterHeight: number; splitTextAlign: 'left' | 'center' | 'right'; };
+  split: {
+    splitImgWidth: number;
+    splitImageSide: 'left' | 'right' | 'center';
+    splitCenterWidth: number;
+    splitCenterHeight: number;
+    splitTextAlign: 'left' | 'center' | 'right';
+    showBorder: boolean;
+    borderColor: string;
+    borderWidth: number;
+  };
 }
 
 export interface CaptionStyle {
@@ -209,7 +218,7 @@ export const DEFAULT_MODE_OPTS: ModeOpts = {
     borderColor: '#ffffff',
     borderWidth: 2,
   },
-  split: { splitImgWidth: 55, splitImageSide: 'left', splitCenterWidth: 40, splitCenterHeight: 45, splitTextAlign: 'left' },
+  split: { splitImgWidth: 55, splitImageSide: 'left', splitCenterWidth: 40, splitCenterHeight: 45, splitTextAlign: 'left', showBorder: false, borderColor: '#ffffff', borderWidth: 2 },
 };
 
 export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
