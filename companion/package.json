@@ -1,0 +1,17 @@
+{
+  "name": "frameflow-companion-bridge",
+  "version": "1.0.0",
+  "description": "HTTP bridge for Bitfocus Companion: same connection code as output, talks to Supabase Realtime.",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.98.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  }
+}

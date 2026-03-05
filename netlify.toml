@@ -1,0 +1,12 @@
+# Netlify deploy for the main app (controller + playout).
+# Build the Vite app; no serverless functions required for the app or for Companion (Companion uses the local bridge + Supabase).
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# SPA fallback: non-file routes go to index.html (playout.html is a real file and is served as-is)
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

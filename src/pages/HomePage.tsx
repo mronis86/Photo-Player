@@ -6,7 +6,7 @@ export function HomePage() {
     <div className="home-page">
       <header className="home-header">
         <span className="home-logo">FRAMEFLOW</span>
-        <span className="home-logo-sub">VISUAL PLAYBACK</span>
+        <span className="home-logo-sub">Image Motion Playback</span>
         <div className="home-header-right">
           <Link to="/login" className="home-btn home-btn-ghost">Sign in</Link>
           <Link to="/signup" className="home-btn home-btn-primary">Get started</Link>

@@ -17,14 +17,15 @@ export type PlayoutMessage =
   | { type: 'init'; aspect?: string }
   | { type: 'connect'; code: string }
   | { type: 'connectionAccepted' }
-  | { type: 'heartbeat' };
+  | { type: 'heartbeat' }
+  | { type: 'disconnect' };
 
 /** Playout sends heartbeat this often (low egress). */
-export const HEARTBEAT_INTERVAL_MS = 45_000;
-/** Controller marks output disconnected after no heartbeat for this long. */
-export const DISCONNECT_AFTER_MS = 60_000;
-/** Controller checks last-seen this often. */
-export const CONNECTED_CHECK_INTERVAL_MS = 15_000;
+export const HEARTBEAT_INTERVAL_MS = 90_000;
+/** Controller marks output disconnected after no heartbeat for this long (must be > HEARTBEAT_INTERVAL_MS). */
+export const DISCONNECT_AFTER_MS = 120_000;
+/** Controller checks last-seen and playout window closed this often. */
+export const CONNECTED_CHECK_INTERVAL_MS = 3_000;
 
 let channel: BroadcastChannel | null = null;
 

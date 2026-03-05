@@ -22,6 +22,8 @@ const DEFAULT_BUFFER_MS = 300;
 const MIN_BUFFER_MS = 0;
 const MAX_BUFFER_MS = 2000;
 
+const STORAGE_KEY_SHOW_PROGRESS_BAR = 'frameflow_playout_show_progress_bar';
+
 function getStoredBufferMs(): number {
   if (typeof localStorage === 'undefined') return DEFAULT_BUFFER_MS;
   const v = localStorage.getItem(STORAGE_KEY_BUFFER_MS);
@@ -30,10 +32,18 @@ function getStoredBufferMs(): number {
   return Number.isFinite(n) && n >= MIN_BUFFER_MS && n <= MAX_BUFFER_MS ? n : DEFAULT_BUFFER_MS;
 }
 
+function getStoredShowProgressBar(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  const v = localStorage.getItem(STORAGE_KEY_SHOW_PROGRESS_BAR);
+  if (v == null) return false;
+  return v === '1' || v === 'true';
+}
+
 export function Stage() {
   const [bufferMs, setBufferMs] = useState(getStoredBufferMs);
   const bufferMsRef = useRef(bufferMs);
   bufferMsRef.current = bufferMs;
+  const [showProgressBar, setShowProgressBar] = useState(getStoredShowProgressBar);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [payload, setPayload] = useState<PlayoutPayload | null>(null);
   const payloadRef = useRef<PlayoutPayload | null>(null);
@@ -585,9 +595,9 @@ export function Stage() {
     }
   }, [payload, nextPayload, useMainLayerForSolo, blurDisplayImageSize]);
 
-  // Progress bar
+  // Progress bar (only when setting enabled; off by default, mainly for testing)
   useEffect(() => {
-    if (!payload || !progRef.current || nextPayload) return;
+    if (!showProgressBar || !payload || !progRef.current || nextPayload) return;
     const effectiveHold = payload.holdDuration ?? 10;
     const start = Date.now();
     const dur = effectiveHold * 1000;
@@ -600,7 +610,7 @@ export function Stage() {
     return () => {
       if (progRafRef.current != null) cancelAnimationFrame(progRafRef.current);
     };
-  }, [payload, nextPayload]);
+  }, [showProgressBar, payload, nextPayload]);
 
   useEffect(() => { setBlurPayloadImageSize(null); }, [payload, payload?.src]);
   useEffect(() => { setBlurDisplayImageSize(null); }, [payload, nextPayload, nextPayload?.src, payload?.src]);
@@ -687,6 +697,21 @@ export function Stage() {
     return () => clearInterval(id);
   }, [connectionAccepted]);
 
+  // When user closes the stage window/tab, notify controller so it can show disconnected immediately
+  useEffect(() => {
+    if (!connectionAccepted) return;
+    const notifyDisconnect = () => {
+      getPlayoutChannel().postMessage({ type: 'disconnect' });
+      try {
+        realtimeSendRef.current?.({ type: 'disconnect' });
+      } catch {
+        // ignore
+      }
+    };
+    window.addEventListener('beforeunload', notifyDisconnect);
+    return () => window.removeEventListener('beforeunload', notifyDisconnect);
+  }, [connectionAccepted]);
+
   return (
     <div
       id="stage"
@@ -696,6 +721,7 @@ export function Stage() {
         width: '100vw',
         height: '100vh',
         background: connectionAccepted ? 'transparent' : '#0a0a0a',
+        cursor: 'default',
       }}
     >
       {/* Code entry (before connection) */}
@@ -787,6 +813,26 @@ export function Stage() {
               </label>
               <div style={{ fontFamily: "'DM Mono'", fontSize: 9, color: '#555', marginTop: 8 }}>
                 0 = no delay. Higher = smoother, more lag.
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontFamily: "'DM Mono'", fontSize: 11, color: '#999' }}>
+                <input
+                  type="checkbox"
+                  checked={showProgressBar}
+                  onChange={(e) => {
+                    const v = e.target.checked;
+                    setShowProgressBar(v);
+                    try {
+                      localStorage.setItem(STORAGE_KEY_SHOW_PROGRESS_BAR, v ? '1' : '0');
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                  style={{ accentColor: 'var(--accent,#d4ff47)' }}
+                />
+                <span>Show progress bar</span>
+              </label>
+              <div style={{ fontFamily: "'DM Mono'", fontSize: 9, color: '#555', marginTop: 4 }}>
+                Off by default. Turn on for testing (shows hold-time fill on output).
               </div>
             </div>
           )}
@@ -1003,7 +1049,7 @@ export function Stage() {
               </div>
             </div>
           )}
-          {!nextPayload && (
+          {showProgressBar && !nextPayload && (
             <div className="prog-bar">
               <div ref={progRef} className="prog-fill" style={{ width: '0%' }} />
             </div>
@@ -1134,7 +1180,7 @@ export function Stage() {
               </div>
             </div>
           )}
-          {!nextPayload && (
+          {showProgressBar && !nextPayload && (
             <div className="prog-bar">
               <div ref={progRef} className="prog-fill" style={{ width: '0%' }} />
             </div>

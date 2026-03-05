@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Cue, Section, KbPoint } from '../../lib/types';
 import type { ModeOpts, CaptionStyle, EndOfCue, TransitionType, WipeDirection } from '../../lib/types';
 import { sendToPlayout, sendPlayPayload, subscribeToPlayout, joinPlayoutChannelAsController, DISCONNECT_AFTER_MS, CONNECTED_CHECK_INTERVAL_MS } from '../../lib/playoutChannel';
+import { joinCompanionChannelAsController, type CompanionStatePayload, type CompanionCommandPayload } from '../../lib/companionChannel';
 import { buildPlayoutPayload } from '../../lib/buildPlayoutPayload';
 import { DEFAULT_MODE_OPTS, DEFAULT_CAPTION_STYLE } from '../../lib/types';
 import { getCueHoldDuration, getCueEOC, getCueFadeIn, getCueFadeOut, getCueModeOpts, getCueCaptionStyle, kbPointToXYZ, xyzToKbPoint, getCueStartXYZ, getCueEndXYZ, getKBScaleVar, getWipeClipPath, getCustomKBTransformFromXYZ } from '../../lib/controllerHelpers';
@@ -354,6 +355,13 @@ export function Controller() {
   const playoutWindowRef = useRef<Window | null>(null);
   const connectionCodeRef = useRef<string>('');
   const playoutLastSeenRef = useRef<number>(0);
+  const companionSendStateRef = useRef<((s: CompanionStatePayload) => void) | null>(null);
+  const companionTakeRef = useRef<(() => void) | null>(null);
+  const companionNextRef = useRef<(() => void) | null>(null);
+  const companionPrevRef = useRef<(() => void) | null>(null);
+  const companionGoToCueRef = useRef<((index: number) => void) | null>(null);
+  const companionClearRef = useRef<(() => void) | null>(null);
+  const companionFadeRef = useRef<((to: 'black' | 'transparent') => void) | null>(null);
   const dualMonitorsRef = useRef<HTMLDivElement | null>(null);
   const pvwSplitRef = useRef(pvwSplit);
   const playStartTimeRef = useRef(0);
@@ -466,6 +474,10 @@ export function Controller() {
         sendToPlayout({ type: 'connectionAccepted' }, playoutWindowRef.current);
       }
       if (msg.type === 'heartbeat') playoutLastSeenRef.current = Date.now();
+      if (msg.type === 'disconnect') {
+        playoutWindowRef.current = null;
+        setPlayoutConnected(false);
+      }
     };
     return subscribeToPlayout(onMsg);
   }, []);
@@ -478,18 +490,80 @@ export function Controller() {
         sendToPlayout({ type: 'connectionAccepted' }, playoutWindowRef.current);
       }
       if (msg.type === 'heartbeat') playoutLastSeenRef.current = Date.now();
+      if (msg.type === 'disconnect') {
+        playoutWindowRef.current = null;
+        setPlayoutConnected(false);
+      }
     });
   }, [connectionCode]);
 
   useEffect(() => {
     if (!playoutConnected) return;
     const id = setInterval(() => {
+      // If we opened the playout in this tab and the user closed that window, detect it immediately
+      if (playoutWindowRef.current?.closed) {
+        playoutWindowRef.current = null;
+        setPlayoutConnected(false);
+        return;
+      }
+      // No heartbeat for too long (e.g. stage tab closed, or Realtime playout disconnected)
       if (Date.now() - playoutLastSeenRef.current > DISCONNECT_AFTER_MS) {
         setPlayoutConnected(false);
       }
     }, CONNECTED_CHECK_INTERVAL_MS);
     return () => clearInterval(id);
   }, [playoutConnected]);
+
+  // Companion (Bitfocus): same code as output; subscribe to commands and broadcast state
+  useEffect(() => {
+    const code = connectionCode.trim().toUpperCase();
+    if (!code) return;
+    const { unsubscribe, sendState } = joinCompanionChannelAsController(code, (cmd: CompanionCommandPayload) => {
+      if (cmd.type === 'take') companionTakeRef.current?.();
+      if (cmd.type === 'next') companionNextRef.current?.();
+      if (cmd.type === 'prev') companionPrevRef.current?.();
+      if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
+      if (cmd.type === 'clear') companionClearRef.current?.();
+      if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
+    });
+    companionSendStateRef.current = sendState;
+    return () => {
+      companionSendStateRef.current = null;
+      unsubscribe();
+    };
+  }, [connectionCode]);
+
+  useEffect(() => {
+    companionTakeRef.current = handleTakeToProgram;
+    companionNextRef.current = () => handleSelectPrevNext(1);
+    companionPrevRef.current = () => handleSelectPrevNext(-1);
+    companionGoToCueRef.current = handleGoToCueIndex;
+    companionClearRef.current = handleCompanionClear;
+    companionFadeRef.current = handleCompanionFade;
+  }, [handleTakeToProgram, handleSelectPrevNext, handleGoToCueIndex, handleCompanionClear, handleCompanionFade]);
+
+  useEffect(() => {
+    const send = companionSendStateRef.current;
+    if (!send) return;
+    const nextIndex = previewCueId != null ? flatCueIds.indexOf(previewCueId) : -1;
+    const cuesSummary = flatCueIds.map((id, index) => {
+      const cue = cues.find((c) => c.id === id);
+      return {
+        index,
+        id,
+        name: cue?.name ?? '',
+        displayName: cue?.displayName,
+        captionTitle: cue?.captionTitle ?? cue?.analysis?.caption,
+      };
+    });
+    send({
+      liveIndex: programCueItemIdx,
+      nextIndex: nextIndex >= 0 ? nextIndex : 0,
+      isLive,
+      playoutConnected,
+      cues: cuesSummary,
+    });
+  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected]);
 
   useEffect(() => {
     try {
@@ -898,6 +972,55 @@ export function Controller() {
     setPreviewCueId(flatCueIds[nextIdx]);
   }, [previewCueId, flatCueIds]);
 
+  const handleGoToCueIndex = useCallback((index: number) => {
+    if (index < 0 || index >= flatCueIds.length) return;
+    const cueId = flatCueIds[index];
+    const cue = cues.find((c) => c.id === cueId);
+    if (!cue) return;
+    setProgramCueItemIdx(index);
+    setPreviewCueId(cueId);
+    setProgramCrossfadeNextCue(null);
+    setProgramOutgoingCue(null);
+    setProgramTransitionKind(null);
+    setIsLive(true);
+    const payload = buildPlayoutPayload({
+      cue,
+      selectedMode: selectedMode,
+      captionStyle,
+      holdDuration,
+      transitionType: 'cut',
+      transDuration: transDuration,
+      dipColor,
+      fadeInDur,
+      fadeOutDur,
+      endOfCueBehavior,
+      fadeTo,
+      zoomScale,
+      motionSpeed,
+      kbDirection,
+      modeOpts,
+      aspect,
+    });
+    void sendPlayPayload(payload, playoutWindowRef.current, user?.id ?? null);
+  }, [flatCueIds, cues, selectedMode, captionStyle, holdDuration, transDuration, dipColor, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect, user?.id]);
+
+  const handleCompanionClear = useCallback(() => {
+    setProgramEocFadeActive(false);
+    setProgramEocFadeOverlayOpacity(0);
+    setProgramEocContentOpacity(1);
+    setIsLive(false);
+    sendToPlayout({ type: 'stop' }, playoutWindowRef.current);
+  }, []);
+
+  const handleCompanionFade = useCallback((to: 'black' | 'transparent') => {
+    const dur = fadeOutDur || 1;
+    sendToPlayout({ type: 'fadeOut', duration: dur, fadeTo: to }, playoutWindowRef.current);
+    setTimeout(() => {
+      setIsLive(false);
+      sendToPlayout({ type: 'stop' }, playoutWindowRef.current);
+    }, dur * 1000);
+  }, [fadeOutDur]);
+
   const moveCueInSection = useCallback((sectionId: string, cueId: string, direction: -1 | 1) => {
     setSections((prev) => prev.map((s) => {
       if (s.id !== sectionId) return s;
@@ -1188,7 +1311,7 @@ export function Controller() {
     <>
       <header>
         <div className="logo">FRAMEFLOW</div>
-        <div className="logo-sub">VISUAL PLAYBACK</div>
+        <div className="logo-sub">Image Motion Playback</div>
         <div className="divider" />
         <div className={`badge ${isLive ? 'badge-live' : 'badge-idle'}`}>
           <div className={`dot ${isLive ? 'dot-red' : 'dot-grey'}`} />
@@ -1320,11 +1443,14 @@ export function Controller() {
                 style={{ display: 'none' }}
                 onChange={(e) => handleFileInput(e)}
               />
-              <div style={{ fontSize: 16, marginBottom: 3 }}>⬆</div>
-              <p>
-                <strong>Drop images here</strong> or click to browse
-              </p>
-              <p>Drop or click to add to cue list</p>
+              <div className="upload-zone-inner">
+                <span className="upload-zone-icon" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="18" height="18" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                <path fillRule="evenodd" d="m19.120106 0c1.8257724 0 3.5522076.83131873 4.6906771 2.25867017l4.8798939 6.11814718c.847677 1.06277155 1.309323 2.38190365 1.309323 3.74132985v13.8818528c0 3.3137085-2.6862915 6-6 6h-16c-3.3137085 0-6-2.6862915-6-6v-20c0-3.3137085 2.6862915-6 6-6zm.879894 21.4731406h-8c-.5522847 0-1 .4477153-1 1 0 .5522848.4477153 1 1 1h8c.5522847 0 1-.4477152 1-1 0-.5522847-.4477153-1-1-1zm-3.9158423-12.4731406h-.1683154c-.2359046.01386477-.4678334.11091814-.6480753.29116012l-4.2426407 4.24264068c-.3905243.3905243-.3905243 1.0236893 0 1.4142136s1.0236892.3905243 1.4142135 0l2.5614272-2.5598738-.000767 6.085c0 .5522848.4477153 1 1 1s1-.4477152 1-1l.000767-6.085 2.5598932 2.5598738c.3905243.3905243 1.0236892.3905243 1.4142135 0s.3905243-1.0236893 0-1.4142136l-4.2426407-4.24264068c-.1802419-.18024198-.4121707-.27729535-.6480753-.29116012z" />
+              </svg>
+            </span>
+                <p><strong>Drop images here</strong> or click to browse</p>
+              </div>
             </div>
             {(user && (storeImagesMode === 'cloud' || storeImagesMode === 'hybrid')) && (
               <button
