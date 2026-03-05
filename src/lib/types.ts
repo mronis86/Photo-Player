@@ -29,6 +29,8 @@ export interface Cue {
   eoc?: EndOfCue;
   /** When eoc is 'fade', target for this cue's EOC fade (defaults to global fadeTo). */
   eocFadeTo?: 'black' | 'transparent';
+  /** When true, at end of this cue auto-load next cue to preview and take it (single cues only). */
+  jumpToNext?: boolean;
   transitionType?: TransitionType;
   transDuration?: number;
   /** When transitionType is 'dip', color to dip to (hex e.g. #000000). Defaults to black. */
@@ -69,7 +71,18 @@ export interface AnalysisResult {
 
 export interface ModeOpts {
   fullscreen: { vignette: boolean; objectFit: 'cover' | 'contain' };
-  blurbg: { blurAmount: number; bgBrightness: number };
+  blurbg: {
+    blurAmount: number;
+    bgBrightness: number;
+    /** Frame is always centered; user adjusts width and height only. Motion stays inside the frame. */
+    frameWidth: number;
+    frameHeight: number;
+    /** When true (default), pre-zoom image to fill frame edge-to-edge so no empty space; motion presets run on top. */
+    fillFrame: boolean;
+    showBorder: boolean;
+    borderColor: string;
+    borderWidth: number;
+  };
   split: { splitImgWidth: number; splitImageSide: 'left' | 'right' | 'center'; splitCenterWidth: number; splitCenterHeight: number; splitTextAlign: 'left' | 'center' | 'right'; };
 }
 
@@ -81,6 +94,10 @@ export interface CaptionStyle {
   position: 'bottom' | 'off';
   /** Lower-third text alignment (fullscreen / blurbg only) */
   justify: 'left' | 'center' | 'right';
+  /** Scale factor for caption text size (1 = 100%, 1.25 = 125%). Editorial can scale up for readability. */
+  textScale?: number;
+  /** Vertical offset (px) for caption position. Positive = move up, negative = move down. */
+  offsetY?: number;
 }
 
 export type KbAnim =
@@ -101,26 +118,30 @@ export interface KbPoint {
 
 export type BetweenImageTransition = 'cut' | 'crossfade';
 
+/** Legacy: kept for loading old projects; groups are migrated to sections. */
 export interface Group {
   id: string;
   name: string;
   cueIds: string[];
   collapsed?: boolean;
-  /** End of cue when the group finishes (last image). */
   eoc?: EndOfCue;
-  /** Transition between images inside the group. */
   transitionBetween?: BetweenImageTransition;
-  /** When transitionBetween is 'crossfade', duration in seconds (0.5–2). */
   transitionBetweenDuration?: number;
-  /** Optional fade in (s) for the first image in the group. */
   fadeIn?: number;
-  /** Optional fade out (s) for the last image / EOC fade. */
   fadeOut?: number;
-  /** When EOC is fade, fade to black or transparent. */
   fadeTo?: 'black' | 'transparent';
 }
 
-export type CueItem = { type: 'single'; id: string } | { type: 'group'; id: string };
+/** Single cue in the cue list (no groups). */
+export type CueItem = { type: 'single'; id: string };
+
+/** Collapsible section in the cue list for organization. Playback order = sections in order, each section's cueIds in order. */
+export interface Section {
+  id: string;
+  name: string;
+  collapsed?: boolean;
+  cueIds: string[];
+}
 
 export type EndOfCue = 'hold' | 'fade' | 'clear';
 export type TransitionType = 'fade' | 'wipe' | 'dip' | 'cut';
@@ -170,13 +191,24 @@ export interface PlayoutPayload {
   wipeDirection?: WipeDirection;
   /** Seconds this layer was already on as incoming crossfade before commit; playout uses for EOC/progress */
   crossfadeLeadIn?: number;
+  /** True when advancing to next image within a group; playout skips buffer for snappier transition. */
+  groupAdvance?: boolean;
 }
 
 export type FadeTo = 'black' | 'transparent';
 
 export const DEFAULT_MODE_OPTS: ModeOpts = {
   fullscreen: { vignette: false, objectFit: 'cover' },
-  blurbg: { blurAmount: 28, bgBrightness: 0.45 },
+  blurbg: {
+    blurAmount: 28,
+    bgBrightness: 0.45,
+    frameWidth: 70,
+    frameHeight: 70,
+    fillFrame: true,
+    showBorder: false,
+    borderColor: '#ffffff',
+    borderWidth: 2,
+  },
   split: { splitImgWidth: 55, splitImageSide: 'left', splitCenterWidth: 40, splitCenterHeight: 45, splitTextAlign: 'left' },
 };
 
@@ -187,4 +219,6 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   bgOpacity: 75,
   position: 'off',
   justify: 'left',
+  textScale: 1,
+  offsetY: 0,
 };

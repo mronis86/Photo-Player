@@ -1,10 +1,12 @@
-import type { Cue, Group, CueItem } from './types';
+import type { Cue, Group, CueItem, Section } from './types';
 import { supabase } from './supabase';
 
 export interface ProjectPayload {
   cues: Cue[];
-  groups: Group[];
-  cueItems: CueItem[];
+  sections: Section[];
+  /** Legacy: for loading old projects only; not written. */
+  groups?: Group[];
+  cueItems?: CueItem[];
 }
 
 export interface ProjectRow {
@@ -33,11 +35,34 @@ export async function loadProject(id: string): Promise<ProjectPayload> {
   if (error) throw error;
   const payload = data?.payload as ProjectPayload | null;
   if (!payload) throw new Error('Project not found');
-  return {
-    cues: payload.cues ?? [],
-    groups: payload.groups ?? [],
-    cueItems: payload.cueItems ?? [],
-  };
+  const cues = payload.cues ?? [];
+  const sections = payload.sections ?? [];
+  const groups = payload.groups ?? [];
+  const cueItems = payload.cueItems ?? [];
+  if (sections.length === 0 && (groups.length > 0 || cueItems.length > 0)) {
+    const migrated = migrateGroupsToSections(groups, cueItems as LegacyCueItem[]);
+    return { cues, sections: migrated };
+  }
+  return { cues, sections: sections.length ? sections : [{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }] };
+}
+
+type LegacyCueItem = { type: 'single'; id: string } | { type: 'group'; id: string };
+
+function migrateGroupsToSections(groups: Group[], cueItems: LegacyCueItem[]): Section[] {
+  const result: Section[] = [];
+  const defaultSection: Section = { id: `sec-${Date.now()}`, name: 'Main', cueIds: [] };
+  for (const item of cueItems) {
+    if (item.type === 'group') {
+      const g = groups.find((x) => x.id === item.id);
+      if (g?.cueIds?.length) {
+        result.push({ id: g.id, name: g.name, collapsed: g.collapsed, cueIds: [...g.cueIds] });
+      }
+    } else {
+      defaultSection.cueIds.push(item.id);
+    }
+  }
+  if (defaultSection.cueIds.length > 0 || result.length === 0) result.unshift(defaultSection);
+  return result;
 }
 
 export async function saveProject(

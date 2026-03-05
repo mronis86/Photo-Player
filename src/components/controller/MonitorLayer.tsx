@@ -1,4 +1,4 @@
-import { useRef, useEffect, useLayoutEffect } from 'react';
+import { useRef, useEffect, useLayoutEffect, useState } from 'react';
 import type { Cue, ModeOpts, CaptionStyle } from '../../lib/types';
 import {
   getCaptionTitle,
@@ -18,6 +18,7 @@ import {
   getCustomKBTransformFromXYZ,
   getCueStartXYZ,
   getCueEndXYZ,
+  getBlurContainMaxScale,
 } from '../../lib/controllerHelpers';
 import { useMediaUrl } from '../../hooks/useMediaUrl';
 import { isStoragePath } from '../../lib/storage';
@@ -41,6 +42,8 @@ export interface MonitorLayerProps {
   groupSize?: number;
   /** When playing a group: 0–100, total group progress for the bar fill */
   groupProgressPct?: number;
+  /** When set (single item), use this for bar fill so it stays in sync with controller clock */
+  itemProgressPct?: number;
   /** When set, show this keyframe only (no animation) so PVW matches the small editor */
   staticKeyframe?: 'start' | 'end' | null;
   /**
@@ -70,12 +73,17 @@ export function MonitorLayer({
   showProgress = false,
   groupSize,
   groupProgressPct = 0,
+  itemProgressPct,
   staticKeyframe = null,
   kbStartOffset = 0,
   kbContinueFrom = 0,
 }: MonitorLayerProps) {
   const kbRef = useRef<HTMLDivElement>(null);
+  const splitKbRef = useRef<HTMLDivElement>(null);
+  const blurKbRef = useRef<HTMLDivElement>(null);
+  const blurImgRef = useRef<HTMLImageElement>(null);
   const progRef = useRef<HTMLDivElement>(null);
+  const [blurImageSize, setBlurImageSize] = useState<{ w: number; h: number } | null>(null);
   const { url: resolvedUrl, loading: urlLoading } = useMediaUrl(cue.src, userId ?? null);
   const displaySrc = resolvedUrl ?? (isStoragePath(cue.src) ? '' : cue.src);
   const isGroup = (groupSize ?? 0) > 1;
@@ -91,9 +99,9 @@ export function MonitorLayer({
   const kbDur = getKBDuration(cue, holdDuration, motionSpeed);
 
   // Apply Ken Burns animation (or static keyframe when editing START/END).
-  // useLayoutEffect so continue-from is applied before paint (avoids glitch as transition ends).
+  // In split/blurbg the "frame" is fixed; only the image inside it moves.
   useLayoutEffect(() => {
-    const el = kbRef.current;
+    const el = mode === 'split' ? splitKbRef.current : mode === 'blurbg' ? blurKbRef.current : kbRef.current;
     if (!el) return;
     const startXYZ = getCueStartXYZ(cue);
     const endXYZ = getCueEndXYZ(cue);
@@ -128,21 +136,49 @@ export function MonitorLayer({
       // Apply delay AFTER helper sets animation shorthand
       el.style.animationDelay = offset > 0 ? `-${offset}s` : '0s';
     } else {
-      el.style.setProperty('--ks', String(kbScale));
+      let effectiveKs = kbScale;
+      const fillFrame = mo.blurbg?.fillFrame !== false;
+      if (mode === 'blurbg' && !fillFrame && blurImageSize && mo.blurbg) {
+        const fw = mo.blurbg.frameWidth ?? 70;
+        const fh = mo.blurbg.frameHeight ?? 70;
+        const frameAspect = (fw / fh) * (16 / 9);
+        const imageAspect = blurImageSize.w / blurImageSize.h;
+        const maxZoom = getBlurContainMaxScale(frameAspect, imageAspect);
+        effectiveKs = Math.min(kbScale, maxZoom);
+      }
+      el.style.setProperty('--ks', String(effectiveKs));
       const animName = getKBAnimationName(kbAnim);
-      el.style.animation = `${animName} ${kbDur}s linear forwards`;
+      el.style.animation = `${animName} ${kbDur}s ease-in-out forwards`;
       // Apply delay AFTER animation shorthand (which resets delay to 0)
       el.style.animationDelay = offset > 0 ? `-${offset}s` : '0s';
     }
-  }, [cue, kbDirection, kbAnim, kbScale, kbDur, playKey, staticKeyframe, kbStartOffset, kbContinueFrom]);
+  }, [mode, cue, kbDirection, kbAnim, kbScale, kbDur, playKey, staticKeyframe, kbStartOffset, kbContinueFrom, blurImageSize, mo.blurbg]);
 
-  // Progress bar fill: when group use groupProgressPct from parent; otherwise run per-cue timer
   useEffect(() => {
-    if (isGroup && progRef.current) {
+    setBlurImageSize(null);
+  }, [displaySrc]);
+
+  // When in blurbg, capture image dimensions from cached img if onLoad didn't run
+  useLayoutEffect(() => {
+    if (mode !== 'blurbg' || !displaySrc) return;
+    const img = blurImgRef.current;
+    if (img?.complete && img.naturalWidth > 0 && img.naturalHeight > 0 && !blurImageSize) {
+      setBlurImageSize({ w: img.naturalWidth, h: img.naturalHeight });
+    }
+  }, [mode, displaySrc, blurImageSize]);
+
+  // Progress bar fill: when group use groupProgressPct from parent; when single and itemProgressPct provided use it (sync with controller); else run local timer
+  useEffect(() => {
+    if (!progRef.current) return;
+    if (isGroup) {
       progRef.current.style.width = `${Math.min(100, groupProgressPct)}%`;
       return;
     }
-    if (!showProgress || !progRef.current) return;
+    if (itemProgressPct != null && showProgress) {
+      progRef.current.style.width = `${Math.min(100, itemProgressPct)}%`;
+      return;
+    }
+    if (!showProgress) return;
     const start = Date.now();
     const dur = getCueHoldDuration(cue, holdDuration) * 1000;
     let raf: number;
@@ -153,7 +189,7 @@ export function MonitorLayer({
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isGroup, showProgress, cue.id, holdDuration, playKey, groupProgressPct]);
+  }, [isGroup, showProgress, cue.id, holdDuration, playKey, groupProgressPct, itemProgressPct]);
 
   if (!displaySrc && urlLoading) {
     return (
@@ -186,72 +222,144 @@ export function MonitorLayer({
           {mo.fullscreen?.vignette && <div className="vignette" />}
         </>
       )}
-      {mode === 'blurbg' && (
-        <div className="kb-layer" ref={kbRef}>
-          <div
-            className="blur-bg"
-            style={{
-              backgroundImage: `url(${displaySrc})`,
-              filter: `blur(${mo.blurbg?.blurAmount ?? 28}px) brightness(${mo.blurbg?.bgBrightness ?? 0.45}) saturate(1.4)`,
-            }}
-          />
-          <div className="blur-fg">
-            <img src={displaySrc} alt="" />
+      {mode === 'blurbg' && (() => {
+        const fw = mo.blurbg?.frameWidth ?? 70;
+        const fh = mo.blurbg?.frameHeight ?? 70;
+        const fillFrame = mo.blurbg?.fillFrame !== false;
+        const showBorder = mo.blurbg?.showBorder ?? false;
+        const borderColor = mo.blurbg?.borderColor ?? '#ffffff';
+        const borderWidth = mo.blurbg?.borderWidth ?? 2;
+        const frameAspect = (fw / fh) * (16 / 9);
+        const imageAspect = blurImageSize ? blurImageSize.w / blurImageSize.h : 16 / 9;
+        const fillScale = fillFrame ? getBlurContainMaxScale(frameAspect, imageAspect) : 1;
+        const frameStyle: React.CSSProperties = {
+          left: '50%',
+          top: '50%',
+          width: `${fw}%`,
+          height: `${fh}%`,
+          transform: 'translate(-50%, -50%)',
+          border: showBorder ? `${borderWidth}px solid ${borderColor}` : 'none',
+        };
+        const fillWrapStyle: React.CSSProperties = {
+          transform: `scale(${fillScale})`,
+          transformOrigin: '50% 50%',
+        };
+        return (
+          <div className="kb-layer">
+            <div
+              className="blur-bg"
+              style={{
+                backgroundImage: `url(${displaySrc})`,
+                filter: `blur(${mo.blurbg?.blurAmount ?? 28}px) brightness(${mo.blurbg?.bgBrightness ?? 0.45}) saturate(1.4)`,
+              }}
+            />
+            <div className="blur-frame" style={frameStyle}>
+              <div className="blur-fill-wrap" style={fillWrapStyle}>
+                <div className="blur-kb-inner" ref={blurKbRef}>
+                  <img
+                    ref={blurImgRef}
+                    src={displaySrc}
+                    alt=""
+                    onLoad={(e) => {
+                      const img = e.currentTarget;
+                      if (img.naturalWidth && img.naturalHeight) setBlurImageSize({ w: img.naturalWidth, h: img.naturalHeight });
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
       {mode === 'split' && (
-        <div className="kb-layer" ref={kbRef}>
-          <div className="split-bg-layer" style={{ backgroundImage: `url(${displaySrc})` }} />
-          {showCaption ? (
-            (() => {
-              const photoSide = modeOpts.split?.splitImageSide ?? mo.split?.splitImageSide ?? 'left';
-              const isCenter = photoSide === 'center';
-              const centerH = modeOpts.split?.splitCenterHeight ?? mo.split?.splitCenterHeight ?? 45;
-              const hasTag = !!tag;
-              const hasSub = !!(sub || (cue.analysis?.subject ?? ''));
-              const lineCount = 1 + (hasTag ? 1 : 0) + (hasSub ? 1 : 0);
-              return (
-                <div
-                  className={`split-content ${photoSide === 'right' ? 'split-content--photo-right' : ''} ${isCenter ? 'split-content--photo-center' : ''}`}
-                  style={isCenter ? { ['--split-center-img-h' as string]: `${centerH}%` } : undefined}
-                >
+        <>
+          {/* Photo placement (Left/Right/Center + size) is the fixed frame; only the image inside it gets Ken Burns */}
+          <div className="kb-layer">
+            <div className="split-bg-layer" style={{ backgroundImage: `url(${displaySrc})` }} />
+            {showCaption ? (
+              (() => {
+                const photoSide = modeOpts.split?.splitImageSide ?? mo.split?.splitImageSide ?? 'left';
+                const isCenter = photoSide === 'center';
+                const centerH = modeOpts.split?.splitCenterHeight ?? mo.split?.splitCenterHeight ?? 45;
+                const imgWidth = mo.split?.splitImgWidth ?? 55;
+                return (
                   <div
-                    className={isCenter ? 'split-img-wrap split-img-wrap--center' : 'split-img-wrap'}
-                    style={isCenter
-                      ? { width: `${modeOpts.split?.splitCenterWidth ?? mo.split?.splitCenterWidth ?? 40}%`, height: `${centerH}%` }
-                      : { width: `${mo.split?.splitImgWidth ?? 55}%` }}
+                    className={`split-content split-content--img-only ${photoSide === 'right' ? 'split-content--photo-right' : ''} ${isCenter ? 'split-content--photo-center' : ''}`}
+                    style={
+                      isCenter
+                        ? { ['--split-center-img-h' as string]: `${centerH}%` }
+                        : { ['--split-img-width' as string]: `${imgWidth}%` }
+                    }
                   >
+                    <div
+                      className={isCenter ? 'split-img-wrap split-img-wrap--center' : 'split-img-wrap'}
+                      style={isCenter
+                        ? { width: `${modeOpts.split?.splitCenterWidth ?? mo.split?.splitCenterWidth ?? 40}%`, height: `${centerH}%` }
+                        : { width: `${imgWidth}%` }}
+                    >
+                      <div className="split-kb-inner" ref={splitKbRef}>
+                        <img
+                          src={displaySrc}
+                          alt=""
+                          style={{ objectFit: mo.fullscreen?.objectFit ?? 'cover' }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()
+            ) : (
+              <div className="split-content split-content--full">
+                <div className="split-img-wrap split-img-wrap--full">
+                  <div className="split-kb-inner" ref={splitKbRef}>
                     <img
                       src={displaySrc}
                       alt=""
                       style={{ objectFit: mo.fullscreen?.objectFit ?? 'cover' }}
                     />
                   </div>
-                  <div
-                    className={`split-text split-text--h-${(modeOpts.split?.splitTextAlign ?? mo.split?.splitTextAlign ?? 'left')}${isCenter ? ` split-text--center-lines-${lineCount}` : ''}`}
-                  >
-                    <div className="split-text-inner">
-                      {tag && <div className="split-tag" style={{ color: cs.accentColor }}>{tag}</div>}
-                      <h2 style={{ color: cs.textColor }}>{title || cue.name}</h2>
-                      <p style={{ color: cs.textColor }}>{sub || (cue.analysis?.subject ?? '')}</p>
-                    </div>
-                  </div>
                 </div>
-              );
-            })()
-          ) : (
-            <div className="split-content split-content--full">
-              <div className="split-img-wrap split-img-wrap--full">
-                <img
-                  src={displaySrc}
-                  alt=""
-                  style={{ objectFit: mo.fullscreen?.objectFit ?? 'cover' }}
-                />
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+          {/* Caption text outside kb-layer so it does not move with Ken Burns */}
+          {showCaption && (() => {
+            const photoSide = modeOpts.split?.splitImageSide ?? mo.split?.splitImageSide ?? 'left';
+            const isCenter = photoSide === 'center';
+            const centerH = modeOpts.split?.splitCenterHeight ?? mo.split?.splitCenterHeight ?? 45;
+            const hasTag = !!tag;
+            const hasSub = !!(sub || (cue.analysis?.subject ?? ''));
+            const lineCount = 1 + (hasTag ? 1 : 0) + (hasSub ? 1 : 0);
+            const imgWidth = mo.split?.splitImgWidth ?? 55;
+            const textScale = Math.max(0.5, Math.min(2, cs.textScale ?? 1));
+            const offsetY = (cs as { offsetY?: number }).offsetY ?? 0;
+            const textAlign = modeOpts.split?.splitTextAlign ?? mo.split?.splitTextAlign ?? 'left';
+            const splitOrigin = textAlign === 'center' ? 'top center' : textAlign === 'right' ? 'top right' : 'top left';
+            const overlayStyle: React.CSSProperties = isCenter
+              ? { top: `${centerH}%`, left: 0, right: 0, bottom: 0 }
+              : photoSide === 'right'
+                ? { left: 0, right: `${100 - imgWidth}%`, top: 0, bottom: 0 }
+                : { left: `${imgWidth}%`, right: 0, top: 0, bottom: 0 };
+            return (
+              <div
+                className={`split-text split-text--fixed split-text--h-${textAlign}${isCenter ? ` split-text--center-lines-${lineCount}` : ''}`}
+                style={{
+                  ...overlayStyle,
+                  position: 'absolute',
+                  margin: 0,
+                  transformOrigin: splitOrigin,
+                  transform: `scale(${textScale}) translateY(${-offsetY}px)`,
+                }}
+              >
+                <div className="split-text-inner">
+                  {tag && <div className="split-tag" style={{ color: cs.accentColor }}>{tag}</div>}
+                  <h2 style={{ color: cs.textColor }}>{title || cue.name}</h2>
+                  <p style={{ color: cs.textColor }}>{sub || (cue.analysis?.subject ?? '')}</p>
+                </div>
+              </div>
+            );
+          })()}
+        </>
       )}
 
       {showCaption && mode !== 'split' && (
@@ -261,7 +369,13 @@ export function MonitorLayer({
             background: `linear-gradient(transparent, ${hexToRgba(cs.bgColor, cs.bgOpacity / 100)})`,
           }}
         >
-          <div className="lower-third-inner">
+          <div
+            className="lower-third-inner"
+            style={{
+              transformOrigin: cs.justify === 'center' ? 'bottom center' : cs.justify === 'right' ? 'bottom right' : 'bottom left',
+              transform: `scale(${Math.max(0.5, Math.min(2, cs.textScale ?? 1))}) translateY(${-((cs as { offsetY?: number }).offsetY ?? 0)}px)`,
+            }}
+          >
             <div className="lt-tag" style={{ color: cs.accentColor }}>{tag}</div>
             <div className="lt-title" style={{ color: cs.textColor }}>{title || cue.name}</div>
             {sub && <div className="lt-sub" style={{ color: cs.textColor }}>{sub}</div>}

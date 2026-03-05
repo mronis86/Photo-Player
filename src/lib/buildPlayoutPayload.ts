@@ -30,6 +30,8 @@ export interface PlayoutPayloadInputs {
   overrideEoc?: EndOfCue;
   /** Override transition duration (e.g. group crossfade duration). */
   overrideTransDuration?: number;
+  /** When set, force this transition type (e.g. controller Take with fade/wipe). Prevents useCut from forcing 'cut'. */
+  overrideTransitionType?: TransitionType;
   /** Override fade in (e.g. group fade in for first image). */
   overrideFadeIn?: number;
   /** Override fade out (e.g. group fade out for last image). */
@@ -42,6 +44,8 @@ export interface PlayoutPayloadInputs {
   wipeDirection?: WipeDirection;
   /** Seconds this layer was already on as incoming crossfade; playout uses for EOC/progress after commit. */
   crossfadeLeadIn?: number;
+  /** When true, playout skips buffer (group advance = use next image's transition immediately). */
+  groupAdvance?: boolean;
 }
 
 function getCaptionTitle(cue: Cue): string {
@@ -150,7 +154,9 @@ export function buildPlayoutPayload(inputs: PlayoutPayloadInputs): PlayoutPayloa
   const modeOptsPayload: Record<string, unknown> =
     mode === 'split'
       ? ({ ...(mo.split || {}), objectFit: mo.fullscreen?.objectFit ?? 'cover' } as Record<string, unknown>)
-      : ((mo as unknown as Record<string, unknown>)[mode] ?? {}) as Record<string, unknown>;
+      : mode === 'blurbg'
+        ? ({ ...DEFAULT_MODE_OPTS.blurbg, ...(mo.blurbg || {}) } as Record<string, unknown>)
+        : ((mo as unknown as Record<string, unknown>)[mode] ?? {}) as Record<string, unknown>;
 
   const startXYZ = getCueStartXYZ(cue);
   const endXYZ = getCueEndXYZ(cue);
@@ -161,10 +167,14 @@ export function buildPlayoutPayload(inputs: PlayoutPayloadInputs): PlayoutPayloa
   const kbAnim = getKBAnim(cue, kbDirection ?? 'auto');
   const payloadFadeIn = inputs.overrideFadeIn ?? getCueFadeIn(cue, fadeInDur);
   const resolvedTransitionType = getCueTransitionType(cue, transitionType);
-  // Hard cut only when explicitly 'cut', or when 'fade' with no fade-in (wipe/dip always use their transition)
-  const useCut = resolvedTransitionType === 'cut' || (resolvedTransitionType === 'fade' && payloadFadeIn === 0);
-  const payloadDipColor = resolvedTransitionType === 'dip' ? getCueDipColor(cue, inputs.dipColor ?? '#000000') : undefined;
-  const payloadWipeDirection = resolvedTransitionType === 'wipe' ? getCueWipeDirection(cue, inputs.wipeDirection ?? 'left') : undefined;
+  // Hard cut only when explicitly 'cut', or when 'fade' with no fade-in. Override wins so controller can force fade/wipe.
+  const useCut = inputs.overrideTransitionType != null && inputs.overrideTransitionType !== 'cut'
+    ? false
+    : resolvedTransitionType === 'cut' || (resolvedTransitionType === 'fade' && payloadFadeIn === 0);
+  const payloadTransitionType = inputs.overrideTransitionType ?? (useCut ? 'cut' : resolvedTransitionType);
+  const payloadTransDuration = useCut ? 0 : (inputs.overrideTransDuration ?? getCueTransDuration(cue, transDuration));
+  const payloadDipColor = payloadTransitionType === 'dip' ? getCueDipColor(cue, inputs.dipColor ?? '#000000') : undefined;
+  const payloadWipeDirection = payloadTransitionType === 'wipe' ? getCueWipeDirection(cue, inputs.wipeDirection ?? 'left') : undefined;
   return {
     type: 'play',
     src: cue.src,
@@ -183,8 +193,8 @@ export function buildPlayoutPayload(inputs: PlayoutPayloadInputs): PlayoutPayloa
     subject: cue.analysis?.subject ?? '',
     holdDuration: getCueHoldDuration(cue, holdDuration),
     captionOn: cs.position !== 'off',
-    transitionType: useCut ? 'cut' : resolvedTransitionType,
-    transDuration: useCut ? 0 : (inputs.overrideTransDuration ?? getCueTransDuration(cue, transDuration)),
+    transitionType: payloadTransitionType,
+    transDuration: payloadTransDuration,
     fadeIn: payloadFadeIn,
     fadeOut: inputs.overrideFadeOut ?? getCueFadeOut(cue, fadeOutDur),
     eoc,
@@ -194,5 +204,6 @@ export function buildPlayoutPayload(inputs: PlayoutPayloadInputs): PlayoutPayloa
     ...(payloadDipColor != null ? { dipColor: payloadDipColor } : {}),
     ...(payloadWipeDirection != null ? { wipeDirection: payloadWipeDirection } : {}),
     ...(inputs.crossfadeLeadIn != null ? { crossfadeLeadIn: inputs.crossfadeLeadIn } : {}),
+    ...(inputs.groupAdvance ? { groupAdvance: true } : {}),
   };
 }

@@ -164,6 +164,12 @@ export function getKBAnimationName(kbAnim: string): string {
   return KB_ANIM_MAP[kbAnim] ?? 'kb-zi';
 }
 
+/** Max scale for blur-frame presets so the image stays contained (no zooming into letterboxing). Frame is always 16:9 viewport; frameAspect = (frameWidthPct/frameHeightPct)*(16/9). */
+export function getBlurContainMaxScale(frameAspect: number, imageAspect: number): number {
+  if (!Number.isFinite(frameAspect) || !Number.isFinite(imageAspect) || imageAspect <= 0) return 10;
+  return Math.max(frameAspect / imageAspect, imageAspect / frameAspect);
+}
+
 /** CSS transform: zoom to rectangle (fill viewport), correct X/Y so crop matches the box. */
 export function getCustomKBTransform(pt: KbPoint, zoomScaleMult: number = 1): string {
   /* max = rectangle fills viewport (one axis fills, other may crop) — matches “framing width” from custom editor */
@@ -268,7 +274,7 @@ export function applyCustomKBKeyframes(
   const all = document.querySelectorAll('style[data-kb-custom]');
   if (all.length > 30) all[0].remove();
   kbEl.style.transformOrigin = '50% 50%';
-  kbEl.style.animation = `${name} ${dur}s linear forwards`;
+  kbEl.style.animation = `${name} ${dur}s ease-in-out forwards`;
 }
 
 export function applyCustomKBKeyframesFromXYZ(
@@ -289,7 +295,7 @@ export function applyCustomKBKeyframesFromXYZ(
   const all = document.querySelectorAll('style[data-kb-custom]');
   if (all.length > 30) all[0].remove();
   kbEl.style.transformOrigin = '50% 50%';
-  kbEl.style.animation = `${name} ${dur}s linear forwards`;
+  kbEl.style.animation = `${name} ${dur}s ease-in-out forwards`;
 }
 
 export function ensureCueModeOpts(cue: Cue, modeOpts: ModeOpts): void {

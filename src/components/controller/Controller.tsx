@@ -1,10 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { Cue, Group, CueItem, KbPoint, BetweenImageTransition } from '../../lib/types';
+import type { Cue, Section, KbPoint } from '../../lib/types';
 import type { ModeOpts, CaptionStyle, EndOfCue, TransitionType, WipeDirection } from '../../lib/types';
 import { sendToPlayout, sendPlayPayload, subscribeToPlayout, DISCONNECT_AFTER_MS, CONNECTED_CHECK_INTERVAL_MS } from '../../lib/playoutChannel';
 import { buildPlayoutPayload } from '../../lib/buildPlayoutPayload';
 import { DEFAULT_MODE_OPTS, DEFAULT_CAPTION_STYLE } from '../../lib/types';
-import { getCueHoldDuration, getCueEOC, getCueFadeOut, getCueModeOpts, getCueCaptionStyle, kbPointToXYZ, xyzToKbPoint, getCueStartXYZ, getCueEndXYZ, getKBScaleVar, getGroupEOC, getGroupTransitionBetween, getGroupTransitionBetweenDuration, getGroupFadeIn, getGroupFadeOut, getGroupFadeTo } from '../../lib/controllerHelpers';
+import { getCueHoldDuration, getCueEOC, getCueFadeIn, getCueFadeOut, getCueModeOpts, getCueCaptionStyle, kbPointToXYZ, xyzToKbPoint, getCueStartXYZ, getCueEndXYZ, getKBScaleVar, getWipeClipPath, getCustomKBTransformFromXYZ } from '../../lib/controllerHelpers';
 import { runImageAnalysis } from '../../lib/imageAnalysis';
 import { listProjects, loadProject, saveProject, type ProjectRow } from '../../lib/projects';
 import { uploadCueImage, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
@@ -17,8 +17,28 @@ const ASPECTS = ['16:9'] as const;
 type Aspect = (typeof ASPECTS)[number];
 type SectionKey = 'aiAnalysis' | 'playbackMode' | 'timing' | 'eoc' | 'motion' | 'transition' | 'caption';
 
+const SECTION_KEYS: SectionKey[] = ['aiAnalysis', 'playbackMode', 'timing', 'eoc', 'motion', 'transition', 'caption'];
+const SECTION_META: Record<SectionKey, { label: string; keywords: string[] }> = {
+  aiAnalysis: { label: 'AI', keywords: ['ai', 'analysis', 'analyze', 'import', 'caption', 'mood', 'composition'] },
+  playbackMode: { label: 'Mode', keywords: ['playback', 'mode', 'fullscreen', 'full', 'blur', 'split', 'editorial', 'frame'] },
+  timing: { label: 'Timing', keywords: ['timing', 'hold', 'duration', 'fade', 'in', 'out', 'seconds'] },
+  eoc: { label: 'EOC', keywords: ['end', 'eoc', 'cue', 'hold', 'fade', 'clear', 'group', 'crossfade', 'between'] },
+  motion: { label: 'Motion', keywords: ['motion', 'ken burns', 'zoom', 'pan', 'drift', 'custom', 'keyframe'] },
+  transition: { label: 'Transition', keywords: ['transition', 'cut', 'fade', 'wipe', 'dip', 'duration'] },
+  caption: { label: 'Caption', keywords: ['caption', 'title', 'text', 'sub', 'tag', 'lower third'] },
+};
+function getSectionsMatchingQuery(query: string): SectionKey[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return SECTION_KEYS;
+  return SECTION_KEYS.filter((key) => {
+    const { label, keywords } = SECTION_META[key];
+    return label.toLowerCase().includes(q) || keywords.some((kw) => kw.includes(q) || q.includes(kw));
+  });
+}
+
 const TRANS_TYPES: TransitionType[] = ['cut', 'fade', 'wipe', 'dip'];
-const WIPE_DIRECTIONS: WipeDirection[] = ['left', 'right', 'up', 'down', 'diagonal-tl-br', 'diagonal-br-tl', 'diagonal-tr-bl', 'diagonal-bl-tr'];
+/** Cardinal directions for wipe (used in UI for now). */
+const WIPE_DIRECTIONS_CARDINAL: WipeDirection[] = ['left', 'right', 'up', 'down'];
 const KB_OPTIONS = ['auto', 'zoom-in', 'zoom-out', 'pan-right', 'pan-left', 'drift', 'custom'] as const;
 
 const KB_ASPECT = 16 / 9;
@@ -104,8 +124,12 @@ interface ThumbnailOverlayProps {
   startXYZ: { cx: number; cy: number; z: number } | null;
   endXYZ: { cx: number; cy: number; z: number } | null;
   kbScale: number;
+  /** When set, show the image cropped to this frame (motion within crop box). When null, show full image with both boxes. */
+  editingFrame: 'start' | 'end' | null;
 }
-function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale }: ThumbnailOverlayProps) {
+/** Fixed "frame" in editorial: centered, fixed size — zoom/pan happens inside it so the frame never moves. */
+const EDITORIAL_FRAME_INSET_PCT = 10;
+function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale, editingFrame }: ThumbnailOverlayProps) {
   function toRect(xyz: { cx: number; cy: number; z: number }) {
     const effectiveZ = clamp(xyz.z * kbScale, 0.5, 10);
     const size = 100 / effectiveZ;
@@ -118,23 +142,70 @@ function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale }: Thumb
   }
   const startRect = startXYZ ? toRect(startXYZ) : null;
   const endRect = endXYZ ? toRect(endXYZ) : null;
+  const xyz = editingFrame === 'start' ? startXYZ : editingFrame === 'end' ? endXYZ : null;
+  const imageTransform = xyz ? getCustomKBTransformFromXYZ(xyz.cx, xyz.cy, xyz.z, kbScale) : undefined;
+
+  const frameStyle: React.CSSProperties = {
+    position: 'absolute',
+    left: `${EDITORIAL_FRAME_INSET_PCT}%`,
+    top: `${EDITORIAL_FRAME_INSET_PCT}%`,
+    width: `${100 - 2 * EDITORIAL_FRAME_INSET_PCT}%`,
+    height: `${100 - 2 * EDITORIAL_FRAME_INSET_PCT}%`,
+    overflow: 'hidden',
+    borderRadius: 2,
+  };
+
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', overflow: 'hidden', borderRadius: 4 }}>
-      <MediaImg
-        src={imageSrc}
-        userId={userId}
-        alt=""
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-      />
-      {startRect && (
-        <div style={{ position: 'absolute', left: `${startRect.x}%`, top: `${startRect.y}%`, width: `${startRect.w}%`, height: `${startRect.h}%`, border: '2px solid #f5c518', boxSizing: 'border-box', pointerEvents: 'none' }}>
-          <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#f5c518', textShadow: '0 1px 3px #000', userSelect: 'none' }}>START</span>
-        </div>
-      )}
-      {endRect && (
-        <div style={{ position: 'absolute', left: `${endRect.x}%`, top: `${endRect.y}%`, width: `${endRect.w}%`, height: `${endRect.h}%`, border: '2px solid #3b9eff', boxSizing: 'border-box', pointerEvents: 'none' }}>
-          <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#3b9eff', textShadow: '0 1px 3px #000', userSelect: 'none' }}>END</span>
-        </div>
+      {editingFrame != null && xyz ? (
+        <>
+          <div style={frameStyle}>
+            <MediaImg
+              src={imageSrc}
+              userId={userId}
+              alt=""
+              style={{
+                position: 'absolute',
+                inset: 0,
+                width: '100%',
+                height: '100%',
+                objectFit: 'cover',
+                display: 'block',
+                transformOrigin: '50% 50%',
+                transform: imageTransform,
+              }}
+            />
+          </div>
+          <div style={{ ...frameStyle, pointerEvents: 'none', border: `2px solid ${editingFrame === 'start' ? '#f5c518' : '#3b9eff'}`, boxSizing: 'border-box' }}>
+            <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: editingFrame === 'start' ? '#f5c518' : '#3b9eff', textShadow: '0 1px 3px #000', userSelect: 'none' }}>{editingFrame === 'start' ? 'START' : 'END'}</span>
+          </div>
+        </>
+      ) : (
+        <>
+          <MediaImg
+            src={imageSrc}
+            userId={userId}
+            alt=""
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              display: 'block',
+            }}
+          />
+          {startRect && (
+            <div style={{ position: 'absolute', left: `${startRect.x}%`, top: `${startRect.y}%`, width: `${startRect.w}%`, height: `${startRect.h}%`, border: '2px solid #f5c518', boxSizing: 'border-box', pointerEvents: 'none' }}>
+              <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#f5c518', textShadow: '0 1px 3px #000', userSelect: 'none' }}>START</span>
+            </div>
+          )}
+          {endRect && (
+            <div style={{ position: 'absolute', left: `${endRect.x}%`, top: `${endRect.y}%`, width: `${endRect.w}%`, height: `${endRect.h}%`, border: '2px solid #3b9eff', boxSizing: 'border-box', pointerEvents: 'none' }}>
+              <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#3b9eff', textShadow: '0 1px 3px #000', userSelect: 'none' }}>END</span>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -148,33 +219,10 @@ function getCue(cues: Cue[], id: string): Cue | undefined {
 function getCueListLabel(cue: Cue): string {
   return (cue.displayName?.trim() || cue.name) || 'Untitled';
 }
-function getGroup(groups: Group[], id: string): Group | undefined {
-  return groups.find((g) => g.id === id);
-}
-function getFirstCueOfItem(cues: Cue[], groups: Group[], item: CueItem | undefined): Cue | undefined {
-  return getCueAtItemIndex(cues, groups, item, 0);
-}
 
-/** Get cue at image index: for single item index 0; for group, cueIds[imageIdx]. */
-function getCueAtItemIndex(cues: Cue[], groups: Group[], item: CueItem | undefined, imageIdx: number): Cue | undefined {
-  if (!item) return undefined;
-  if (item.type === 'single') return imageIdx === 0 ? getCue(cues, item.id) : undefined;
-  const g = getGroup(groups, item.id);
-  const id = g?.cueIds?.[imageIdx];
-  return id ? getCue(cues, id) : undefined;
-}
-
-/** Total duration for program item: single = hold, group = n * hold. */
-function getProgramTotalDuration(
-  item: CueItem | undefined,
-  groups: Group[],
-  holdDuration: number
-): number {
-  if (!item) return holdDuration;
-  if (item.type === 'single') return holdDuration;
-  const g = getGroup(groups, item.id);
-  const n = g?.cueIds?.length ?? 0;
-  return n ? n * holdDuration : holdDuration;
+/** Flat playback order: all cue ids in section order. */
+function getFlatCueIds(sections: Section[]): string[] {
+  return sections.flatMap((s) => s.cueIds);
 }
 
 export function Controller() {
@@ -194,21 +242,16 @@ export function Controller() {
     transition: false,
     caption: false,
   });
+  const [settingsSearchQuery, setSettingsSearchQuery] = useState('');
+  const settingsSectionRefs = useRef<Record<SectionKey, HTMLDivElement | null>>({} as Record<SectionKey, HTMLDivElement | null>);
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
   const [selectedMode, setSelectedMode] = useState<'fullscreen' | 'blurbg' | 'split'>('fullscreen');
   const [cues, setCues] = useState<Cue[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [cueItems, setCueItems] = useState<CueItem[]>([]);
+  const [sections, setSections] = useState<Section[]>([{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }]);
   const [programCueItemIdx, setProgramCueItemIdx] = useState(-1);
-  const [programGroupImageIdx, setProgramGroupImageIdx] = useState(-1);
-  /** Selected item for preview/next: single cue or whole group. */
-  const [previewItem, setPreviewItem] = useState<CueItem | null>(null);
-  /** When a group is selected, which image in the group we're editing (mode/motion/caption). Null = group-level only. */
-  const [editingCueId, setEditingCueId] = useState<string | null>(null);
-  const previewGroup = previewItem?.type === 'group' ? getGroup(groups, previewItem.id) : undefined;
-  const firstCueIdInGroup = previewGroup?.cueIds?.[0] ?? null;
-  /** Cue we're editing in the panel (and whose image is shown in preview). When group selected, editingCueId ?? first; when single, that cue. */
-  const effectiveEditingCueId = previewItem == null ? null : previewItem.type === 'single' ? previewItem.id : (editingCueId && previewGroup?.cueIds.includes(editingCueId) ? editingCueId : firstCueIdInGroup);
-  const previewCueId = effectiveEditingCueId;
+  /** Selected cue for preview/next. */
+  const [previewCueId, setPreviewCueId] = useState<string | null>(null);
+  const flatCueIds = getFlatCueIds(sections);
   const [holdDuration, setHoldDuration] = useState(8);
   const [fadeInDur, setFadeInDur] = useState(0);
   const [fadeOutDur, setFadeOutDur] = useState(0);
@@ -248,7 +291,7 @@ export function Controller() {
   });
   const storeImagesInCloud = storeImagesMode === 'cloud';
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
-  const [deleteCueModal, setDeleteCueModal] = useState<{ cue: Cue; itemType: 'single' | 'group'; groupId?: string } | null>(null);
+  const [deleteCueModal, setDeleteCueModal] = useState<{ cue: Cue } | null>(null);
   const [renameCueModal, setRenameCueModal] = useState<Cue | null>(null);
   const [renameCueInput, setRenameCueInput] = useState('');
   const [cloudBrowserOpen, setCloudBrowserOpen] = useState(false);
@@ -271,7 +314,22 @@ export function Controller() {
   const [timeRemain, setTimeRemain] = useState('—');
   const [programCrossfadeNextCue, setProgramCrossfadeNextCue] = useState<Cue | null>(null);
   const [programOutgoingCue, setProgramOutgoingCue] = useState<Cue | null>(null);
-  const [showIncomingAsMain, setShowIncomingAsMain] = useState(false);
+  const [programCrossfadeDuration, setProgramCrossfadeDuration] = useState(0.8);
+  const [programCrossfadeOutOpacity, setProgramCrossfadeOutOpacity] = useState(1);
+  const [programCrossfadeInOpacity, setProgramCrossfadeInOpacity] = useState(0);
+  const programCrossfadeDurationRef = useRef(0.8);
+  /** 'fade' | 'wipe' when we're doing a smooth transition; null for cut. */
+  const [programTransitionKind, setProgramTransitionKind] = useState<'fade' | 'wipe' | null>(null);
+  /** Wipe: 100 = incoming fully clipped (hidden), 0 = fully revealed. Animated 100→0 over duration. */
+  const [programWipeRevealPct, setProgramWipeRevealPct] = useState(100);
+  /** EOC fade on program monitor: when true we're fading program view to black or transparent. */
+  const [programEocFadeActive, setProgramEocFadeActive] = useState(false);
+  const [programEocFadeTo, setProgramEocFadeTo] = useState<'black' | 'transparent'>('black');
+  const [programEocFadeDuration, setProgramEocFadeDuration] = useState(1);
+  const [programEocFadeOverlayOpacity, setProgramEocFadeOverlayOpacity] = useState(0);
+  const [programEocContentOpacity, setProgramEocContentOpacity] = useState(1);
+  /** When doing a fade/wipe take, we defer updating program indices until the transition ends so layers don't remount and jump. */
+  const pendingProgramTakeRef = useRef<{ itemIdx: number; imageIdx: number } | null>(null);
   const playoutWindowRef = useRef<Window | null>(null);
   const connectionCodeRef = useRef<string>('');
   const playoutLastSeenRef = useRef<number>(0);
@@ -279,25 +337,105 @@ export function Controller() {
   const pvwSplitRef = useRef(pvwSplit);
   const playStartTimeRef = useRef(0);
   const progressFillRef = useRef<HTMLDivElement>(null);
-  const cueItemsRef = useRef(cueItems);
+  const flatCueIdsRef = useRef(flatCueIds);
   const programCueItemIdxRef = useRef(programCueItemIdx);
-  const programGroupImageIdxRef = useRef(programGroupImageIdx);
   const loopOnRef = useRef(loopOn);
+  /** When set, next previewCueId change should trigger an automatic take (used by jump-to-next). */
+  const takeOnNextPreviewRef = useRef(false);
   const cuesRef = useRef(cues);
-  const groupsRef = useRef(groups);
+  const sectionsRef = useRef(sections);
   const settingsRef = useRef({ selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect });
-  cueItemsRef.current = cueItems;
+  flatCueIdsRef.current = flatCueIds;
   programCueItemIdxRef.current = programCueItemIdx;
-  programGroupImageIdxRef.current = programGroupImageIdx;
   loopOnRef.current = loopOn;
   cuesRef.current = cues;
-  groupsRef.current = groups;
+  sectionsRef.current = sections;
   settingsRef.current = { selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect };
   pvwSplitRef.current = pvwSplit;
+
+  // Program monitor: when programCrossfadeNextCue is set (fade or wipe), animate then commit
+  useEffect(() => {
+    if (!programCrossfadeNextCue) return;
+    const kind = programTransitionKind;
+    const durMs = programCrossfadeDurationRef.current * 1000;
+    const START_DELAY_MS = 80;
+    const COMMIT_EXTRA_MS = 150;
+
+    const tStart = setTimeout(() => {
+      if (kind === 'fade') {
+        setProgramCrossfadeOutOpacity(0);
+        setProgramCrossfadeInOpacity(1);
+      }
+      // Wipe: programWipeRevealPct is driven by rAF below
+    }, START_DELAY_MS);
+
+    let wipeStartTime: number | null = null;
+    let rafId: number;
+    let wipeStartTimeout: ReturnType<typeof setTimeout>;
+    const animateWipe = (now: number) => {
+      if (wipeStartTime == null) wipeStartTime = now;
+      const elapsed = now - wipeStartTime;
+      const pct = Math.max(0, 100 - (elapsed / durMs) * 100);
+      setProgramWipeRevealPct(pct);
+      if (pct > 0) rafId = requestAnimationFrame(animateWipe);
+    };
+    if (kind === 'wipe') {
+      wipeStartTimeout = setTimeout(() => {
+        rafId = requestAnimationFrame((now) => {
+          wipeStartTime = now;
+          setProgramWipeRevealPct(100);
+          rafId = requestAnimationFrame(animateWipe);
+        });
+      }, START_DELAY_MS);
+    }
+
+    const tEnd = setTimeout(() => {
+      const pending = pendingProgramTakeRef.current;
+      if (pending != null) {
+        setProgramCueItemIdx(pending.itemIdx);
+        programCueItemIdxRef.current = pending.itemIdx;
+        pendingProgramTakeRef.current = null;
+      }
+      setProgramCrossfadeNextCue(null);
+      setProgramOutgoingCue(null);
+      setProgramTransitionKind(null);
+      setProgramCrossfadeOutOpacity(1);
+      setProgramCrossfadeInOpacity(0);
+      setProgramWipeRevealPct(100);
+    }, durMs + COMMIT_EXTRA_MS);
+
+    return () => {
+      clearTimeout(tStart);
+      clearTimeout(tEnd);
+      if (kind === 'wipe') {
+        clearTimeout(wipeStartTimeout);
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [programCrossfadeNextCue, programTransitionKind]);
 
   const toggleSection = useCallback((key: SectionKey) => {
     setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
+
+  const scrollToSection = useCallback((key: SectionKey) => {
+    setOpenSections((prev) => ({ ...prev, [key]: true }));
+    requestAnimationFrame(() => {
+      const el = settingsSectionRefs.current[key];
+      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, []);
+
+  const visibleSectionKeys = getSectionsMatchingQuery(settingsSearchQuery);
+
+  useEffect(() => {
+    if (!settingsSearchQuery.trim() || visibleSectionKeys.length === 0) return;
+    setOpenSections((prev) => {
+      const next = { ...prev };
+      visibleSectionKeys.forEach((key) => { next[key] = true; });
+      return next;
+    });
+  }, [settingsSearchQuery, visibleSectionKeys.join(',')]);
 
   useEffect(() => {
     return subscribeToPlayout((msg) => {
@@ -386,23 +524,20 @@ export function Controller() {
   }, []);
 
   const previewCue = previewCueId ? getCue(cues, previewCueId) : undefined;
-  const programItem = programCueItemIdx >= 0 ? cueItems[programCueItemIdx] : undefined;
-  const programGroupImageIdxSafe = programGroupImageIdx < 0 ? 0 : programGroupImageIdx;
-  const programCue = getCueAtItemIndex(cues, groups, programItem, programGroupImageIdxSafe);
-  const programTotalDur = getProgramTotalDuration(programItem, groups, holdDuration);
-  const programGroupSize = programItem?.type === 'group'
-    ? (getGroup(groups, programItem.id)?.cueIds?.length ?? 0)
-    : 1;
+  const programCueId = programCueItemIdx >= 0 ? flatCueIds[programCueItemIdx] : undefined;
+  const programCue = programCueId ? getCue(cues, programCueId) : undefined;
+  const programTotalDur = programCue ? getCueHoldDuration(programCue, holdDuration) : holdDuration;
+  const pendingTake = pendingProgramTakeRef.current;
+  const effectiveProgramItemIdx = programCrossfadeNextCue && pendingTake != null ? pendingTake.itemIdx : programCueItemIdx;
+  const effectiveProgramCue = programCrossfadeNextCue ?? programCue;
   const effectivePreviewMode = previewCue?.mode ?? selectedMode;
   const effectivePreviewModeOpts = previewCue ? getCueModeOpts(previewCue, modeOpts) : modeOpts;
   const effectivePreviewCaptionStyle = previewCue ? getCueCaptionStyle(previewCue, captionStyle) : captionStyle;
   const effectiveProgramMode = programCue?.mode ?? selectedMode;
   const effectiveProgramModeOpts = programCue ? getCueModeOpts(programCue, modeOpts) : modeOpts;
   const effectiveProgramCaptionStyle = programCue ? getCueCaptionStyle(programCue, captionStyle) : captionStyle;
-  const panelAppliesToCue = Boolean(previewItem);
-  const panelAppliesToGroup = previewItem?.type === 'group';
-  /** True when we have a specific cue to edit (single item, or an image selected inside the group). Disable mode/motion/caption when group selected but no image chosen. */
-  const panelCanEditCue = previewItem?.type === 'single' || (previewItem?.type === 'group' && editingCueId != null);
+  const panelAppliesToCue = Boolean(previewCueId);
+  const panelCanEditCue = Boolean(previewCueId);
   const panelMode = panelCanEditCue ? effectivePreviewMode : selectedMode;
   const panelModeOpts = panelCanEditCue ? effectivePreviewModeOpts : modeOpts;
   const panelCaptionStyle = panelCanEditCue ? effectivePreviewCaptionStyle : captionStyle;
@@ -417,8 +552,8 @@ export function Controller() {
         const defaults = { splitImgWidth: 55, splitImageSide: 'left' as const, splitCenterWidth: 40, splitCenterHeight: 45, splitTextAlign: 'left' as const };
         const splitBase = { ...defaults, ...(c.modeOpts?.split ?? modeOpts.split) };
         const base = c.modeOpts
-          ? { ...c.modeOpts, fullscreen: { ...c.modeOpts.fullscreen }, blurbg: { ...c.modeOpts.blurbg }, split: splitBase }
-          : { ...modeOpts, fullscreen: { ...modeOpts.fullscreen }, blurbg: { ...modeOpts.blurbg }, split: splitBase };
+          ? { ...c.modeOpts, fullscreen: { ...c.modeOpts.fullscreen }, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...c.modeOpts.blurbg }, split: splitBase }
+          : { ...modeOpts, fullscreen: { ...modeOpts.fullscreen }, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...modeOpts.blurbg }, split: splitBase };
         return { ...c, modeOpts: update(base) };
       }));
     } else setModeOpts(update);
@@ -431,10 +566,7 @@ export function Controller() {
   const panelHoldDuration = panelCanEditCue && previewCue ? getCueHoldDuration(previewCue, holdDuration) : holdDuration;
   const panelFadeInDur = panelCanEditCue && previewCue ? (previewCue.fadeIn != null ? previewCue.fadeIn : fadeInDur) : fadeInDur;
   const panelFadeOutDur = panelCanEditCue && previewCue ? (previewCue.fadeOut != null ? previewCue.fadeOut : fadeOutDur) : fadeOutDur;
-  const panelEndOfCueBehavior = panelAppliesToGroup && previewGroup
-    ? getGroupEOC(previewGroup, endOfCueBehavior)
-    : (panelCanEditCue && previewCue ? ((previewCue.eoc as EndOfCue) ?? endOfCueBehavior) : endOfCueBehavior);
-  const panelGroupTransitionBetween = previewGroup ? getGroupTransitionBetween(previewGroup, 'crossfade') : 'crossfade';
+  const panelEndOfCueBehavior = panelCanEditCue && previewCue ? ((previewCue.eoc as EndOfCue) ?? endOfCueBehavior) : endOfCueBehavior;
   const panelZoomScale = panelCanEditCue && previewCue ? (previewCue.zoomScale != null ? previewCue.zoomScale : zoomScale) : zoomScale;
   const panelMotionSpeed = panelCanEditCue && previewCue ? (previewCue.motionSpeed != null ? previewCue.motionSpeed : motionSpeed) : motionSpeed;
   const panelKbDirection = panelCanEditCue && previewCue ? (previewCue.kbAnim ?? kbDirection) : kbDirection;
@@ -456,31 +588,9 @@ export function Controller() {
     else setFadeOutDur(v);
   }, [previewCueId]);
   const setPanelEndOfCueBehavior = useCallback((v: EndOfCue) => {
-    if (previewItem?.type === 'group') setGroups((prev) => prev.map((g) => (g.id === previewItem.id ? { ...g, eoc: v } : g)));
-    else if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, eoc: v } : c)));
+    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, eoc: v } : c)));
     else setEndOfCueBehavior(v);
-  }, [previewItem, previewCueId]);
-  const setPanelGroupTransitionBetween = useCallback((v: BetweenImageTransition) => {
-    if (previewItem?.type === 'group') setGroups((prev) => prev.map((g) => (g.id === previewItem.id ? { ...g, transitionBetween: v } : g)));
-  }, [previewItem]);
-  const panelGroupTransitionBetweenDuration = previewGroup ? getGroupTransitionBetweenDuration(previewGroup, 0.8) : 0.8;
-  const setPanelGroupTransitionBetweenDuration = useCallback((v: number) => {
-    if (previewItem?.type === 'group') setGroups((prev) => prev.map((g) => (g.id === previewItem.id ? { ...g, transitionBetweenDuration: Math.max(0.5, Math.min(2, v)) } : g)));
-  }, [previewItem]);
-  const panelGroupFadeIn = previewGroup ? getGroupFadeIn(previewGroup, fadeInDur) : fadeInDur;
-  const panelGroupFadeOut = previewGroup ? getGroupFadeOut(previewGroup, fadeOutDur) : fadeOutDur;
-  const setPanelGroupFadeIn = useCallback((v: number) => {
-    if (previewItem?.type === 'group') setGroups((prev) => prev.map((g) => (g.id === previewItem.id ? { ...g, fadeIn: Math.max(0, v) } : g)));
-  }, [previewItem]);
-  const setPanelGroupFadeOut = useCallback((v: number) => {
-    if (previewItem?.type === 'group') setGroups((prev) => prev.map((g) => (g.id === previewItem.id ? { ...g, fadeOut: Math.max(0, v) } : g)));
-  }, [previewItem]);
-  const panelGroupFadeTo = previewGroup ? getGroupFadeTo(previewGroup, fadeTo) : fadeTo;
-  const setPanelGroupFadeTo = useCallback((v: 'black' | 'transparent') => {
-    if (previewItem?.type === 'group') setGroups((prev) => prev.map((g) => (g.id === previewItem.id ? { ...g, fadeTo: v } : g)));
-  }, [previewItem]);
-  /** True when the cue we're editing is inside the selected group (so fade in/out are controlled by group). */
-  const panelCueIsInGroup = previewItem?.type === 'group' && Boolean(editingCueId);
+  }, [previewCueId]);
   const setPanelZoomScale = useCallback((v: number) => {
     if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, zoomScale: v } : c)));
     else setZoomScale(v);
@@ -526,12 +636,11 @@ export function Controller() {
   }, [panelKbDirection, previewCueId]);
 
   useEffect(() => {
-    if (!isLive || !programCue || !programItem) return;
+    if (!isLive || !programCue) return;
     playStartTimeRef.current = Date.now();
     setProgressPct(0);
-    const totalDur = getProgramTotalDuration(programItem, groups, holdDuration);
-    const n = programGroupSize;
-    const hold = holdDuration;
+    const totalDur = getCueHoldDuration(programCue, holdDuration);
+    const fadeInSec = getCueFadeIn(programCue, fadeInDur);
     const fmt = (s: number) => {
       const m = Math.floor(s / 60);
       const sec = Math.floor(s % 60);
@@ -540,78 +649,53 @@ export function Controller() {
     let raf: number;
     const tick = () => {
       const elapsed = (Date.now() - playStartTimeRef.current) / 1000;
-      const pct = Math.min((elapsed / totalDur) * 100, 100);
+      const effectiveElapsed = Math.max(0, elapsed - fadeInSec);
+      const pct = Math.min((effectiveElapsed / totalDur) * 100, 100);
+      if (progressFillRef.current) progressFillRef.current.style.width = `${pct}%`;
       setProgressPct(pct);
-      setTimeElapsed(fmt(elapsed));
-      setTimeRemain(fmt(Math.max(0, totalDur - elapsed)));
-
-      if (n > 1) {
-        const items = cueItemsRef.current;
-        const idx = programCueItemIdxRef.current;
-        const item = items[idx];
-        const st = settingsRef.current;
-        const programGroup = item?.type === 'group' ? getGroup(groupsRef.current, item.id) : undefined;
-        const currentImageIdx = Math.min(Math.floor(elapsed / hold), n - 1);
-
-        if (currentImageIdx > programGroupImageIdxRef.current) {
-          programGroupImageIdxRef.current = currentImageIdx;
-          setShowIncomingAsMain(false);
-          setProgramGroupImageIdx(currentImageIdx);
-          const nextCue = getCueAtItemIndex(cuesRef.current, groupsRef.current, item, currentImageIdx);
-          const isLastInGroup = programGroup && currentImageIdx === n - 1;
-          if (nextCue) {
-            const payload = buildPlayoutPayload({
-              cue: nextCue,
-              selectedMode: st.selectedMode,
-              captionStyle: st.captionStyle,
-              holdDuration: st.holdDuration,
-              transitionType: 'cut',
-              transDuration: st.transDuration,
-              dipColor: st.dipColor,
-              wipeDirection: st.wipeDirection,
-              fadeInDur: st.fadeInDur,
-              fadeOutDur: st.fadeOutDur,
-              endOfCueBehavior: st.endOfCueBehavior,
-              zoomScale: st.zoomScale,
-              motionSpeed: st.motionSpeed,
-              kbDirection: st.kbDirection,
-              modeOpts: st.modeOpts,
-              aspect: st.aspect,
-              fadeTo: st.fadeTo,
-              overrideEoc: isLastInGroup ? getGroupEOC(programGroup, st.endOfCueBehavior) : undefined,
-              overrideFadeOut: isLastInGroup ? getGroupFadeOut(programGroup, st.fadeOutDur) : undefined,
-              overrideFadeTo: isLastInGroup ? getGroupFadeTo(programGroup, st.fadeTo) : undefined,
-            });
-            void sendPlayPayload(payload, playoutWindowRef.current, user?.id ?? null);
-          }
-        }
-      }
+      setTimeElapsed(fmt(effectiveElapsed));
+      setTimeRemain(fmt(Math.max(0, totalDur - effectiveElapsed)));
 
       if (pct < 100) raf = requestAnimationFrame(tick);
       else {
-        const eocCue = n > 1
-          ? getCueAtItemIndex(cuesRef.current, groupsRef.current, programItem, n - 1)
-          : programCue;
-        const programGroup = programItem?.type === 'group' ? getGroup(groupsRef.current, programItem.id) : undefined;
-        const eoc = programGroup ? getGroupEOC(programGroup, endOfCueBehavior) : getCueEOC(eocCue ?? programCue, endOfCueBehavior);
-        const fadeOut = programGroup ? getGroupFadeOut(programGroup, fadeOutDur) : getCueFadeOut(eocCue ?? programCue, fadeOutDur);
-            if (eoc === 'fade' && fadeOut > 0) {
-            const st = settingsRef.current;
-            const eocFadeTo = (programGroup ? getGroupFadeTo(programGroup, st.fadeTo) : (eocCue?.eocFadeTo ?? st.fadeTo)) as 'black' | 'transparent';
-            sendToPlayout({ type: 'fadeOut', duration: fadeOut, fadeTo: eocFadeTo }, playoutWindowRef.current);
+        const ids = flatCueIdsRef.current;
+        const idx = programCueItemIdxRef.current;
+        if (programCue?.jumpToNext && idx >= 0 && idx < ids.length - 1) {
+          takeOnNextPreviewRef.current = true;
+          setPreviewCueId(ids[idx + 1]);
+          return;
+        }
+        const eoc = getCueEOC(programCue, endOfCueBehavior);
+        const fadeOut = getCueFadeOut(programCue, fadeOutDur);
+        const effectiveFadeOut = eoc === 'fade' ? Math.max(fadeOut, 1) : fadeOut;
+        if (eoc === 'fade') {
+          const st = settingsRef.current;
+          const eocFadeTo = (programCue.eocFadeTo ?? st.fadeTo) as 'black' | 'transparent';
+          sendToPlayout({ type: 'fadeOut', duration: effectiveFadeOut, fadeTo: eocFadeTo }, playoutWindowRef.current);
+          setProgramEocFadeOverlayOpacity(0);
+          setProgramEocContentOpacity(1);
+          setProgramEocFadeActive(true);
+          setProgramEocFadeTo(eocFadeTo);
+          setProgramEocFadeDuration(effectiveFadeOut);
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (eocFadeTo === 'black') setProgramEocFadeOverlayOpacity(1);
+              else setProgramEocContentOpacity(0);
+            });
+          });
           setTimeout(() => {
-            const items = cueItemsRef.current;
-            const idx = programCueItemIdxRef.current;
+            setProgramEocFadeActive(false);
+            setProgramEocFadeOverlayOpacity(0);
+            setProgramEocContentOpacity(1);
+            const idsNext = flatCueIdsRef.current;
+            const idxNext = programCueItemIdxRef.current;
             const loop = loopOnRef.current;
             const st = settingsRef.current;
-            if (loop && items.length > 0) {
-              const nextIdx = idx >= items.length - 1 ? 0 : idx + 1;
-              const nextItem = items[nextIdx];
-              const nextCue = getFirstCueOfItem(cuesRef.current, groupsRef.current, nextItem);
-              setShowIncomingAsMain(false);
+            if (loop && idsNext.length > 0) {
+              const nextIdx = idxNext >= idsNext.length - 1 ? 0 : idxNext + 1;
+              const nextCueId = idsNext[nextIdx];
+              const nextCue = nextCueId ? getCue(cuesRef.current, nextCueId) : undefined;
               setProgramCueItemIdx(nextIdx);
-              setProgramGroupImageIdx(0);
-              programGroupImageIdxRef.current = 0;
               if (nextCue) {
                 const payload = buildPlayoutPayload({
                   cue: nextCue,
@@ -639,20 +723,17 @@ export function Controller() {
               setIsLive(false);
               sendToPlayout({ type: 'stop' }, playoutWindowRef.current);
             }
-          }, fadeOut * 1000);
+          }, effectiveFadeOut * 1000);
         } else if (eoc === 'clear') {
-          const items = cueItemsRef.current;
-          const idx = programCueItemIdxRef.current;
+          const idsNext = flatCueIdsRef.current;
+          const idxNext = programCueItemIdxRef.current;
           const loop = loopOnRef.current;
           const st = settingsRef.current;
-          if (loop && items.length > 0) {
-            const nextIdx = idx >= items.length - 1 ? 0 : idx + 1;
-            const nextItem = items[nextIdx];
-            const nextCue = getFirstCueOfItem(cuesRef.current, groupsRef.current, nextItem);
-            setShowIncomingAsMain(false);
+          if (loop && idsNext.length > 0) {
+            const nextIdx = idxNext >= idsNext.length - 1 ? 0 : idxNext + 1;
+            const nextCueId = idsNext[nextIdx];
+            const nextCue = nextCueId ? getCue(cuesRef.current, nextCueId) : undefined;
             setProgramCueItemIdx(nextIdx);
-            setProgramGroupImageIdx(0);
-            programGroupImageIdxRef.current = 0;
             if (nextCue) {
               const payload = buildPlayoutPayload({
                 cue: nextCue,
@@ -685,7 +766,7 @@ export function Controller() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [isLive, programCueItemIdx, holdDuration, endOfCueBehavior, fadeOutDur, programGroupSize, groups, user?.id]);
+  }, [isLive, programCueItemIdx, holdDuration, endOfCueBehavior, fadeOutDur, flatCueIds, user?.id, fadeInDur]);
 
   const handlePvwPlay = () => {
     if (!previewCue) return;
@@ -708,32 +789,46 @@ export function Controller() {
       playoutWindowRef.current.focus();
       return;
     }
-    playoutWindowRef.current = window.open('/playout.html', 'frameflow_playout', 'width=1280,height=720');
+    playoutWindowRef.current = window.open('/playout.html', 'frameflow_playout', 'width=1280,height=720,resizable=yes');
     setTimeout(() => sendToPlayout({ type: 'init', aspect }, playoutWindowRef.current), 800);
   };
 
   const handleTakeToProgram = useCallback(() => {
-    if (!previewItem || !cueItems.length) return;
-    const previewCue = getFirstCueOfItem(cues, groups, previewItem);
-    if (!previewCue) return;
-    const idx = cueItems.findIndex((i) => i.type === previewItem.type && i.id === previewItem.id);
+    if (!previewCueId || !previewCue || !flatCueIds.length) return;
+    const idx = flatCueIds.indexOf(previewCueId);
+    const transType = (previewCue.transitionType as TransitionType) ?? transitionType;
+    const transDur = previewCue.transDuration != null ? previewCue.transDuration : transDuration;
+    const useSmoothTransition = (transType === 'fade' || transType === 'wipe') && transDur > 0 && isLive && programCue != null;
 
-    setProgramCueItemIdx(idx >= 0 ? idx : 0);
-    setProgramGroupImageIdx(0);
-    programGroupImageIdxRef.current = 0;
+    if (useSmoothTransition) {
+      pendingProgramTakeRef.current = { itemIdx: idx >= 0 ? idx : 0, imageIdx: 0 };
+    } else {
+      setProgramCueItemIdx(idx >= 0 ? idx : 0);
+    }
     setIsLive(true);
-    setShowIncomingAsMain(false);
-    setProgramCrossfadeNextCue(null);
-    setProgramOutgoingCue(null);
 
-    const takeGroup = previewItem.type === 'group' ? getGroup(groups, previewItem.id) : undefined;
+    if (useSmoothTransition) {
+      setProgramOutgoingCue(programCue);
+      setProgramCrossfadeNextCue(previewCue);
+      setProgramTransitionKind(transType === 'wipe' ? 'wipe' : 'fade');
+      if (transType === 'wipe') setProgramWipeRevealPct(100);
+      programCrossfadeDurationRef.current = transDur;
+      setProgramCrossfadeDuration(transDur);
+      setProgramCrossfadeOutOpacity(1);
+      setProgramCrossfadeInOpacity(0);
+    } else {
+      setProgramCrossfadeNextCue(null);
+      setProgramOutgoingCue(null);
+      setProgramTransitionKind(null);
+    }
+
     const payload = buildPlayoutPayload({
       cue: previewCue,
       selectedMode: selectedMode,
       captionStyle,
       holdDuration,
-      transitionType: 'cut',
-      transDuration: transDuration,
+      transitionType: useSmoothTransition ? transType : 'cut',
+      transDuration: useSmoothTransition ? transDur : transDuration,
       dipColor,
       fadeInDur,
       fadeOutDur,
@@ -744,15 +839,22 @@ export function Controller() {
       kbDirection,
       modeOpts,
       aspect,
-      overrideFadeIn: takeGroup != null ? getGroupFadeIn(takeGroup, fadeInDur) : undefined,
+      ...(useSmoothTransition ? { overrideTransitionType: transType, overrideTransDuration: transDur } : {}),
     });
     void sendPlayPayload(payload, playoutWindowRef.current, user?.id ?? null);
-  }, [previewItem, cues, cueItems, groups, selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect, user?.id, isLive, programCue]);
+  }, [previewCueId, previewCue, cues, flatCueIds, selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect, user?.id, isLive, programCue]);
+
+  // When jump-to-next sets preview then this flag, take the new preview to program
+  useEffect(() => {
+    if (!takeOnNextPreviewRef.current || !previewCueId) return;
+    takeOnNextPreviewRef.current = false;
+    handleTakeToProgram();
+  }, [previewCueId, handleTakeToProgram]);
 
   const handleSelectPrevNext = useCallback((direction: -1 | 1) => {
-    const total = cueItems.length;
+    const total = flatCueIds.length;
     if (total === 0) return;
-    const idx = previewItem == null ? -1 : cueItems.findIndex((i) => i.type === previewItem.type && i.id === previewItem.id);
+    const idx = previewCueId == null ? -1 : flatCueIds.indexOf(previewCueId);
     let nextIdx: number;
     if (idx < 0) {
       nextIdx = direction === 1 ? 0 : total - 1;
@@ -760,9 +862,49 @@ export function Controller() {
       nextIdx = idx + direction;
       if (nextIdx < 0 || nextIdx >= total) return;
     }
-    const item = cueItems[nextIdx];
-    if (item) { setPreviewItem(item); setEditingCueId(null); }
-  }, [previewItem, cueItems, groups, cues]);
+    setPreviewCueId(flatCueIds[nextIdx]);
+  }, [previewCueId, flatCueIds]);
+
+  const moveCueInSection = useCallback((sectionId: string, cueId: string, direction: -1 | 1) => {
+    setSections((prev) => prev.map((s) => {
+      if (s.id !== sectionId) return s;
+      const i = s.cueIds.indexOf(cueId);
+      if (i < 0) return s;
+      const j = i + direction;
+      if (j < 0 || j >= s.cueIds.length) return s;
+      const next = [...s.cueIds];
+      [next[i], next[j]] = [next[j], next[i]];
+      return { ...s, cueIds: next };
+    }));
+  }, []);
+
+  const moveSection = useCallback((sectionIdx: number, direction: -1 | 1) => {
+    const j = sectionIdx + direction;
+    if (j < 0 || j >= sections.length) return;
+    setSections((prev) => {
+      const next = [...prev];
+      [next[sectionIdx], next[j]] = [next[j], next[sectionIdx]];
+      return next;
+    });
+  }, [sections.length]);
+
+  const toggleSectionCollapsed = useCallback((sectionId: string) => {
+    setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, collapsed: !s.collapsed } : s)));
+  }, []);
+
+  const removeSection = useCallback((sectionId: string) => {
+    const sec = sections.find((s) => s.id === sectionId);
+    if (!sec) return;
+    if (sec.cueIds.length > 0 && !window.confirm(`Move ${sec.cueIds.length} item(s) to first section and remove "${sec.name}"?`)) return;
+    setSections((prev) => {
+      const rest = prev.filter((s) => s.id !== sectionId);
+      const first = rest[0];
+      if (sec.cueIds.length > 0 && first) {
+        return rest.map((s) => (s.id === first.id ? { ...s, cueIds: [...s.cueIds, ...sec.cueIds] } : s));
+      }
+      return rest;
+    });
+  }, [sections]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -783,11 +925,12 @@ export function Controller() {
     return () => document.removeEventListener('keydown', onKey);
   }, [handleTakeToProgram, handleSelectPrevNext]);
 
-  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>, targetGroupId?: string) => {
+  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>, targetSectionId?: string) => {
     const files = e.target.files ? Array.from(e.target.files) : [];
     const imgs = files.filter((f) => f.type.startsWith('image/'));
     if (!imgs.length) return;
     e.target.value = '';
+    const sectionId = targetSectionId ?? sections[0]?.id;
 
     const useCloud = storeImagesInCloud && user?.id;
 
@@ -797,16 +940,12 @@ export function Controller() {
         const id = `cue-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         try {
           const path = await uploadCueImage(file, user.id, id);
-          const cue: Cue = { id, src: path, name, groupId: targetGroupId ?? undefined };
+          const cue: Cue = { id, src: path, name };
           setCues((prev) => [...prev, cue]);
-          if (targetGroupId) {
-            setGroups((prev) =>
-              prev.map((g) => (g.id === targetGroupId ? { ...g, cueIds: [...g.cueIds, id] } : g))
-            );
-          } else {
-            setCueItems((prev) => [...prev, { type: 'single', id }]);
+          if (sectionId) {
+            setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, cueIds: [...s.cueIds, id] } : s)));
           }
-          setPreviewItem({ type: 'single', id });
+          setPreviewCueId(id);
           if (analyzeOnImport) {
             setAnalyzingCueId(id);
             const signedUrl = await getSignedUrl(user.id, path);
@@ -837,16 +976,12 @@ export function Controller() {
         const src = (ev.target?.result as string) ?? '';
         const name = file.name.replace(/\.[^.]+$/, '');
         const id = `cue-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-        const cue: Cue = { id, src, name, groupId: targetGroupId ?? undefined };
+        const cue: Cue = { id, src, name };
         setCues((prev) => [...prev, cue]);
-        if (targetGroupId) {
-          setGroups((prev) =>
-            prev.map((g) => (g.id === targetGroupId ? { ...g, cueIds: [...g.cueIds, id] } : g))
-          );
-        } else {
-          setCueItems((prev) => [...prev, { type: 'single', id }]);
+        if (sectionId) {
+          setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, cueIds: [...s.cueIds, id] } : s)));
         }
-        setPreviewItem({ type: 'single', id });
+        setPreviewCueId(id);
         if (analyzeOnImport) {
           setAnalyzingCueId(id);
           runImageAnalysis(src, name, useAiAnalysis)
@@ -868,37 +1003,31 @@ export function Controller() {
     });
   };
 
-  const addEmptyGroup = () => {
-    const name = window.prompt('Group name:', `Group ${groups.length + 1}`) || `Group ${groups.length + 1}`;
-    const id = `grp-${Date.now()}`;
-    setGroups((prev) => [...prev, { id, name, cueIds: [], collapsed: false }]);
-    setCueItems((prev) => [...prev, { type: 'group', id }]);
+  const addSection = () => {
+    const name = window.prompt('Section name:', `Section ${sections.length + 1}`) || `Section ${sections.length + 1}`;
+    const id = `sec-${Date.now()}`;
+    setSections((prev) => [...prev, { id, name, cueIds: [] }]);
   };
 
   const clearCues = () => {
     if (!window.confirm('Clear all cues?')) return;
     setCues([]);
-    setGroups([]);
-    setCueItems([]);
+    setSections([{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }]);
     setProgramCueItemIdx(-1);
-    setPreviewItem(null);
+    setPreviewCueId(null);
     setIsLive(false);
   };
 
   const handleRemoveCue = (alsoDeleteFromCloud: boolean) => {
     if (!deleteCueModal) return;
-    const { cue, itemType, groupId } = deleteCueModal;
+    const { cue } = deleteCueModal;
     const isCloud = isCloudStoredCue(cue.src);
     if (isCloud && alsoDeleteFromCloud && user?.id) {
       deleteCueImage(user.id, cue.src).catch((e) => setProjectSaveError(e instanceof Error ? e.message : 'Failed to delete from cloud'));
     }
     setCues((p) => p.filter((c) => c.id !== cue.id));
-    if (itemType === 'single') {
-      setCueItems((p) => p.filter((x) => x.type !== 'single' || x.id !== cue.id));
-    } else if (groupId) {
-      setGroups((p) => p.map((g) => (g.id === groupId ? { ...g, cueIds: g.cueIds.filter((id) => id !== cue.id) } : g)));
-    }
-    if (previewItem?.type === 'single' && previewItem.id === cue.id) setPreviewItem(null);
+    setSections((p) => p.map((s) => ({ ...s, cueIds: s.cueIds.filter((id) => id !== cue.id) })));
+    if (previewCueId === cue.id) setPreviewCueId(null);
     setDeleteCueModal(null);
   };
 
@@ -920,10 +1049,12 @@ export function Controller() {
       const id = `cue-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`;
       return { id, src: file.path, name: file.name, groupId: undefined };
     });
-    const newItems: CueItem[] = newCues.map((c) => ({ type: 'single' as const, id: c.id }));
     setCues((prev) => [...prev, ...newCues]);
-    setCueItems((prev) => [...prev, ...newItems]);
-    if (newCues.length > 0) setPreviewItem({ type: 'single', id: newCues[newCues.length - 1].id });
+    const firstSectionId = sections[0]?.id;
+    if (firstSectionId) {
+      setSections((prev) => prev.map((s) => (s.id === firstSectionId ? { ...s, cueIds: [...s.cueIds, ...newCues.map((c) => c.id)] } : s)));
+    }
+    if (newCues.length > 0) setPreviewCueId(newCues[newCues.length - 1].id);
     setCloudSelected(new Set());
     setCloudBrowserOpen(false);
   };
@@ -941,17 +1072,16 @@ export function Controller() {
     setCurrentProjectId(null);
     setCurrentProjectName('Untitled');
     setCues([]);
-    setGroups([]);
-    setCueItems([]);
+    setSections([{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }]);
     setProgramCueItemIdx(-1);
-    setPreviewItem(null);
+    setPreviewCueId(null);
     setProjectSaveError(null);
   };
 
   const handleSaveProject = async () => {
     setProjectSaveError(null);
     try {
-      const id = await saveProject(currentProjectId, currentProjectName, { cues, groups, cueItems });
+      const id = await saveProject(currentProjectId, currentProjectName, { cues, sections });
       setCurrentProjectId(id);
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Save failed');
@@ -978,23 +1108,20 @@ export function Controller() {
     try {
       const payload = await loadProject(id);
       setCues(payload.cues);
-      setGroups(payload.groups);
-      setCueItems(payload.cueItems);
+      setSections(payload.sections);
       setCurrentProjectId(id);
       setCurrentProjectName(projectList.find((p) => p.id === id)?.name ?? 'Untitled');
       setProgramCueItemIdx(-1);
-      setPreviewItem(payload.cueItems[0] ? { type: payload.cueItems[0].type, id: payload.cueItems[0].id } : null);
-      setEditingCueId(null);
+      const firstId = getFlatCueIds(payload.sections)[0] ?? null;
+      setPreviewCueId(firstId);
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Load failed');
     }
   };
 
-  const totalItems = cueItems.length;
+  const totalItems = flatCueIds.length;
   const programCueNum = programCueItemIdx >= 0 ? String(programCueItemIdx + 1).padStart(2, '0') : '—';
-  const previewCueItemIdx = previewItem != null
-    ? cueItems.findIndex((i) => i.type === previewItem.type && i.id === previewItem.id)
-    : -1;
+  const previewCueItemIdx = previewCueId != null ? flatCueIds.indexOf(previewCueId) : -1;
   const nextCueNum = previewCueItemIdx >= 0 ? String(previewCueItemIdx + 1).padStart(2, '0') : '—';
 
   return (
@@ -1094,7 +1221,7 @@ export function Controller() {
                   type="button"
                   className="cue-act-btn"
                   style={{ opacity: 1, padding: '2px 8px', fontSize: 8 }}
-                  onClick={addEmptyGroup}
+                  onClick={addSection}
                 >
                   + Group
                 </button>
@@ -1135,7 +1262,7 @@ export function Controller() {
               <p>
                 <strong>Drop images here</strong> or click to browse
               </p>
-              <p>Multiple → auto-group · Single → standalone</p>
+              <p>Drop or click to add to cue list</p>
             </div>
             {(user && (storeImagesMode === 'cloud' || storeImagesMode === 'hybrid')) && (
               <button
@@ -1170,175 +1297,96 @@ export function Controller() {
           </div>
           <div className="sec-overflow">
             <ul className="cue-list">
-              {cueItems.length === 0 ? (
-                <li className="empty-msg">Load images or create a group to start</li>
+              {flatCueIds.length === 0 ? (
+                <li className="empty-msg">Load images to start</li>
               ) : (
-                cueItems.map((item, idx) => {
-                  if (item.type === 'single') {
-                    const cue = cues.find((c) => c.id === item.id);
-                    if (!cue) return null;
-                    const isPgm = isLive && programCueItemIdx === idx;
-                    const isPvw = previewCueId === cue.id;
-                    return (
-                      <li
-                        key={cue.id}
-                        className={`cue-item ${isPgm ? 'program' : ''} ${isPvw ? 'preview' : ''} ${analyzingCueId === cue.id ? 'analyzing' : ''}`}
-                        onClick={() => { setPreviewItem({ type: 'single', id: cue.id }); setEditingCueId(null); }}
-                      >
-                        <span className="cue-num">{String(idx + 1).padStart(2, '0')}</span>
-                        {analyzingCueId === cue.id && <span className="cue-item-spinner" aria-hidden />}
-                        <div className="cue-thumb-wrap">
-                          <MediaImg src={cue.src} userId={user?.id ?? null} className="cue-thumb" alt="" />
-                        </div>
-                        <div className="cue-info">
-                          <div className="cue-name">{getCueListLabel(cue)}</div>
-                          <div className="cue-meta">
-                            {(() => {
-                              const cueMode = cue.mode ?? selectedMode;
-                              const cueModeOpts = getCueModeOpts(cue, modeOpts);
-                              const cueEoc = getCueEOC(cue, endOfCueBehavior);
-                              const objectFit = cueModeOpts.fullscreen?.objectFit ?? 'cover';
-                              return (
-                                <>
-                                  <span className={`cue-mode-badge ${cueMode === 'fullscreen' ? 'mode-full' : cueMode === 'blurbg' ? 'mode-blur' : 'mode-split'}`}>
-                                    {cueMode === 'fullscreen' ? 'FULL' : cueMode === 'blurbg' ? 'BLUR' : 'SPLIT'}
-                                  </span>
-                                  {cueMode === 'fullscreen' && (
-                                    <span className={`cue-mode-badge ${objectFit === 'cover' ? 'mode-fill' : 'mode-fit'}`}>
-                                      {objectFit === 'cover' ? 'FILL' : 'FIT'}
-                                    </span>
-                                  )}
-                                  <span className={`eoc-badge ${cueEoc === 'hold' ? 'eoc-hold' : cueEoc === 'fade' ? 'eoc-fade' : 'eoc-clear'}`}>
-                                    {cueEoc === 'hold' ? 'HOLD' : cueEoc === 'fade' ? 'FADE OUT' : 'CLEAR'}
-                                  </span>
-                                  {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud">☁</span>}
-                                </>
-                              );
-                            })()}
-                          </div>
-                        </div>
-                        <div className="cue-actions">
-                          <button type="button" className="cue-act-btn cue-act-rename" onClick={(e) => { e.stopPropagation(); setRenameCueModal(cue); }} title="Custom name in cue list">⚙</button>
-                          <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); setDeleteCueModal({ cue, itemType: 'single' }); }}>
-                            ✕
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  }
-                  const g = groups.find((x) => x.id === item.id);
-                  if (!g) return null;
-                  const isPgm = isLive && programCueItemIdx === idx;
-                  const isPvwGroup = previewItem?.type === 'group' && previewItem.id === g.id;
-                  const firstCue = g.cueIds.length ? cues.find((c) => c.id === g.cueIds[0]) : null;
-                  const groupEoc = getGroupEOC(g, endOfCueBehavior);
+                sections.map((sec, secIdx) => {
+                  let globalIdx = 0;
+                  for (let i = 0; i < secIdx; i++) globalIdx += sections[i].cueIds.length;
+                  const sectionStartIdx = globalIdx;
                   return (
-                    <div key={g.id} className="group-section">
+                    <div key={sec.id} className="cue-list-section">
                       <li
-                        className={`group-row ${isPgm ? 'program' : ''} ${isPvwGroup ? 'preview' : ''} ${!g.collapsed ? 'open' : ''}`}
-                        onClick={() => { setPreviewItem({ type: 'group', id: g.id }); setEditingCueId(null); }}
+                        className={`section-row ${!sec.collapsed ? 'open' : ''}`}
+                        onClick={() => toggleSectionCollapsed(sec.id)}
                       >
-                        <span className="cue-num">{String(idx + 1).padStart(2, '0')}</span>
                         <span
                           className="grp-chevron"
-                          onClick={(e) => { e.stopPropagation(); setGroups((prev) => prev.map((x) => (x.id === g.id ? { ...x, collapsed: !x.collapsed } : x))); }}
-                          title={g.collapsed ? 'Expand' : 'Collapse'}
+                          onClick={(e) => { e.stopPropagation(); toggleSectionCollapsed(sec.id); }}
+                          title={sec.collapsed ? 'Expand' : 'Collapse'}
                         >
-                          ▶
+                          {sec.collapsed ? '▶' : '▼'}
                         </span>
-                        {firstCue ? (
-                          <div className="cue-thumb-wrap">
-                            <MediaImg src={firstCue.src} userId={user?.id ?? null} className="cue-thumb" alt="" style={{ borderColor: 'var(--accent2)' }} />
-                          </div>
-                        ) : (
-                          <div className="cue-thumb-ph" />
-                        )}
-                        <div className="cue-info">
-                          <div className="cue-name" style={{ color: 'var(--accent2)' }}>{g.name}</div>
-                          <div className="cue-meta">
-                            <span style={{ color: 'var(--accent2)' }}>GROUP</span>
-                            <span>{g.cueIds.length} img</span>
-                            <span className={`eoc-badge ${groupEoc === 'hold' ? 'eoc-hold' : groupEoc === 'fade' ? 'eoc-fade' : 'eoc-clear'}`}>
-                              {groupEoc === 'hold' ? 'HOLD' : groupEoc === 'fade' ? 'FADE' : 'CLEAR'}
-                            </span>
-                            {getGroupTransitionBetween(g, 'crossfade') === 'cut' && <span className="cue-mode-badge" title="Between images: cut">CUT</span>}
-                            {firstCue && isCloudStoredCue(firstCue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Cloud">☁</span>}
-                          </div>
-                        </div>
-                        <div className="cue-actions">
-                          <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); if (window.confirm('Delete group?')) { if (previewItem?.type === 'group' && previewItem.id === g.id) setPreviewItem(null); setCues((p) => p.filter((c) => !g.cueIds.includes(c.id))); setGroups((p) => p.filter((x) => x.id !== g.id)); setCueItems((p) => p.filter((x) => x.type !== 'group' || x.id !== g.id)); } }}>
-                            ✕
-                          </button>
+                        <span className="section-name">{sec.name}</span>
+                        <span className="section-count">{sec.cueIds.length}</span>
+                        <div className="cue-actions" onClick={(e) => e.stopPropagation()}>
+                          <button type="button" className="cue-act-btn" title="Move section up" onClick={() => moveSection(secIdx, -1)} disabled={secIdx === 0}>↑</button>
+                          <button type="button" className="cue-act-btn" title="Move section down" onClick={() => moveSection(secIdx, 1)} disabled={secIdx === sections.length - 1}>↓</button>
+                          {sections.length > 1 && (
+                            <button type="button" className="cue-act-btn del" title="Remove section" onClick={() => removeSection(sec.id)}>✕</button>
+                          )}
                         </div>
                       </li>
-                        {!g.collapsed &&
-                        g.cueIds.map((cid, childIdx) => {
-                          const cue = cues.find((c) => c.id === cid);
-                          if (!cue) return null;
-                          const isEditingInGroup = previewItem?.type === 'group' && previewItem.id === g.id && editingCueId === cue.id;
-                          const isPgmChild = isPgm && programGroupImageIdxSafe === childIdx;
-                          return (
-                            <div
-                              key={cue.id}
-                              className={`group-child ${isEditingInGroup ? 'editing' : ''} ${isPgmChild ? 'program' : ''} ${analyzingCueId === cue.id ? 'analyzing' : ''}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                if (previewItem?.type === 'group' && previewItem.id === g.id) {
-                                  setEditingCueId(cue.id);
-                                } else {
-                                  setPreviewItem({ type: 'single', id: cue.id });
-                                  setEditingCueId(null);
-                                }
-                              }}
-                            >
-                              {analyzingCueId === cue.id && <span className="cue-item-spinner" aria-hidden />}
-                              <div className="cue-thumb-wrap">
-                                <MediaImg src={cue.src} userId={user?.id ?? null} className="cue-thumb" alt="" />
-                              </div>
-                              <div className="cue-info">
-                                <div className="cue-name">{getCueListLabel(cue)}</div>
-                                <div className="cue-meta">
-                                  {(() => {
-                                    const cueMode = cue.mode ?? selectedMode;
-                                    const cueModeOpts = getCueModeOpts(cue, modeOpts);
-                                    const cueEoc = getCueEOC(cue, endOfCueBehavior);
-                                    const objectFit = cueModeOpts.fullscreen?.objectFit ?? 'cover';
-                                    return (
-                                      <>
-                                        {cueMode === 'fullscreen' && (
-                                          <span className={`cue-mode-badge ${objectFit === 'cover' ? 'mode-fill' : 'mode-fit'}`}>
-                                            {objectFit === 'cover' ? 'FILL' : 'FIT'}
-                                          </span>
-                                        )}
-                                        <span className={`eoc-badge ${cueEoc === 'hold' ? 'eoc-hold' : cueEoc === 'fade' ? 'eoc-fade' : 'eoc-clear'}`}>
-                                          {cueEoc === 'hold' ? 'HOLD' : cueEoc === 'fade' ? 'FADE OUT' : 'CLEAR'}
-                                        </span>
-                                        {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud">☁</span>}
-                                      </>
-                                    );
-                                  })()}
+                      {!sec.collapsed && (
+                        <>
+                          {sec.cueIds.map((cueId, localIdx) => {
+                            const cue = cues.find((c) => c.id === cueId);
+                            if (!cue) return null;
+                            const idx = sectionStartIdx + localIdx;
+                            const isPgm = isLive && programCueItemIdx === idx;
+                            const isPvw = previewCueId === cue.id;
+                            return (
+                              <li
+                                key={cue.id}
+                                className={`cue-item ${isPgm ? 'program' : ''} ${isPvw ? 'preview' : ''} ${analyzingCueId === cue.id ? 'analyzing' : ''}`}
+                                onClick={() => setPreviewCueId(cue.id)}
+                              >
+                                <span className="cue-num">{String(idx + 1).padStart(2, '0')}</span>
+                                <div className="cue-reorder">
+                                  <button type="button" className="cue-act-btn" title="Move up" onClick={(e) => { e.stopPropagation(); moveCueInSection(sec.id, cue.id, -1); }} disabled={localIdx === 0}>↑</button>
+                                  <button type="button" className="cue-act-btn" title="Move down" onClick={(e) => { e.stopPropagation(); moveCueInSection(sec.id, cue.id, 1); }} disabled={localIdx === sec.cueIds.length - 1}>↓</button>
                                 </div>
-                              </div>
-                              <div className="cue-actions">
-                                <button type="button" className="cue-act-btn cue-act-rename" onClick={(e) => { e.stopPropagation(); setRenameCueModal(cue); }} title="Custom name in cue list">⚙</button>
-                                <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); setDeleteCueModal({ cue, itemType: 'group', groupId: g.id }); }}>
-                                  ✕
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      {!g.collapsed && (
-                        <div className="group-add-row" onClick={() => document.getElementById(`add-${g.id}`)?.click()}>
-                          <input type="file" id={`add-${g.id}`} accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => handleFileInput(e, g.id)} />
-                          <span>＋ add images to this group</span>
-                        </div>
+                                {analyzingCueId === cue.id && <span className="cue-item-spinner" aria-hidden />}
+                                <div className="cue-thumb-wrap">
+                                  <MediaImg src={cue.src} userId={user?.id ?? null} className="cue-thumb" alt="" />
+                                </div>
+                                <div className="cue-info">
+                                  <div className="cue-name">{getCueListLabel(cue)}</div>
+                                  <div className="cue-meta">
+                                    <span className={`cue-mode-badge ${(cue.mode ?? selectedMode) === 'fullscreen' ? 'mode-full' : (cue.mode ?? selectedMode) === 'blurbg' ? 'mode-blur' : 'mode-split'}`}>
+                                      {(cue.mode ?? selectedMode) === 'fullscreen' ? 'FULL' : (cue.mode ?? selectedMode) === 'blurbg' ? 'BLUR' : 'SPLIT'}
+                                    </span>
+                                    <span className={`eoc-badge ${getCueEOC(cue, endOfCueBehavior) === 'hold' ? 'eoc-hold' : getCueEOC(cue, endOfCueBehavior) === 'fade' ? 'eoc-fade' : 'eoc-clear'}`}>
+                                      {getCueEOC(cue, endOfCueBehavior) === 'hold' ? 'HOLD' : getCueEOC(cue, endOfCueBehavior) === 'fade' ? 'FADE OUT' : 'CLEAR'}
+                                    </span>
+                                    {cue.jumpToNext && <span className="cue-meta-icon cue-jump-icon" title="Jump to next at end">⏭</span>}
+                                    {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud">☁</span>}
+                                  </div>
+                                </div>
+                                <div className="cue-actions">
+                                  <button type="button" className={`cue-act-btn ${cue.jumpToNext ? 'on-b' : ''}`} onClick={(e) => { e.stopPropagation(); setCues((prev) => prev.map((c) => c.id === cue.id ? { ...c, jumpToNext: !c.jumpToNext } : c)); }} title="At end: auto load next to preview and take">⏭</button>
+                                  <button type="button" className="cue-act-btn cue-act-rename" onClick={(e) => { e.stopPropagation(); setRenameCueModal(cue); }} title="Custom name in cue list">⚙</button>
+                                  <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); setDeleteCueModal({ cue }); }}>✕</button>
+                                </div>
+                              </li>
+                            );
+                          })}
+                          <div className="section-add-row" onClick={() => document.getElementById(`add-${sec.id}`)?.click()}>
+                            <input type="file" id={`add-${sec.id}`} accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => handleFileInput(e, sec.id)} />
+                            <span>＋ add to this section</span>
+                          </div>
+                        </>
                       )}
                     </div>
                   );
                 })
               )}
             </ul>
+            <div style={{ padding: '6px 10px' }}>
+              <button type="button" className="btn-sm" onClick={addSection} title="New section for organization">
+                ＋ New section
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1401,7 +1449,7 @@ export function Controller() {
 
             <div className="monitor-splitter" />
 
-            <div className="monitor-col">
+            <div className="monitor-col program-col">
               <div className="monitor-header">
                 <span className="monitor-label pgm">● PROGRAM</span>
                 <span style={{ fontFamily: "'DM Mono'", fontSize: 8, color: 'var(--text2)', marginLeft: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
@@ -1409,9 +1457,7 @@ export function Controller() {
                 </span>
                 {isLive && programCue && (
                   <span className="monitor-trans-badge" title="Transition">
-                    {programItem?.type === 'group'
-                      ? (getGroupTransitionBetween(programItem ? getGroup(groups, programItem.id) : null, 'crossfade') === 'cut' ? 'CUT' : `FADE ${(programItem ? getGroupTransitionBetweenDuration(getGroup(groups, programItem.id), transDuration) : transDuration).toFixed(1)}s`)
-                      : ((programCue.transitionType as TransitionType) ?? transitionType).toUpperCase() === 'CUT' ? 'CUT' : `${((programCue.transitionType as TransitionType) ?? transitionType).toUpperCase()} ${(programCue.transDuration != null ? programCue.transDuration : transDuration).toFixed(1)}s`}
+                    {((programCue.transitionType as TransitionType) ?? transitionType).toUpperCase() === 'CUT' ? 'CUT' : `${((programCue.transitionType as TransitionType) ?? transitionType).toUpperCase()} ${(programCue.transDuration != null ? programCue.transDuration : transDuration).toFixed(1)}s`}
                   </span>
                 )}
               </div>
@@ -1421,28 +1467,88 @@ export function Controller() {
                     <div className="ph-icon">◫</div>
                     <div className="ph-txt">AWAITING CUE</div>
                   </div>
-                  {/* Program monitor: cut only */}
-                  {isLive && programCue && (
+                  {/* Program content: wrap in div for EOC transparent fade */}
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      zIndex: 9,
+                      pointerEvents: 'none',
+                      opacity: programEocContentOpacity,
+                      transition: programEocFadeActive && programEocFadeTo === 'transparent' ? `opacity ${programEocFadeDuration}s ease` : 'none',
+                    }}
+                  >
+                    {/* Program monitor: outgoing layer only during fade; same key as pre-fade single layer so it doesn't remount/jump */}
+                    {isLive && programCrossfadeNextCue && (programOutgoingCue ?? programCue) && (
+                      <div
+                        key={`pgm-${programCueItemIdx}`}
+                        className="play-layer"
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          zIndex: 10,
+                          pointerEvents: 'none',
+                          opacity: programTransitionKind === 'wipe' ? 1 : programCrossfadeOutOpacity,
+                          transition: programTransitionKind === 'wipe' ? 'none' : `opacity ${programCrossfadeDuration}s ease`,
+                        }}
+                      >
+                        <MonitorLayer
+                          cue={(programOutgoingCue ?? programCue)!}
+                          mode={effectiveProgramMode}
+                          modeOpts={effectiveProgramModeOpts}
+                          captionStyle={effectiveProgramCaptionStyle}
+                          holdDuration={holdDuration}
+                          zoomScale={zoomScale}
+                          motionSpeed={motionSpeed}
+                          kbDirection={(programOutgoingCue ?? programCue)?.kbAnim ?? kbDirection}
+                          userId={user?.id ?? null}
+                          showProgress={false}
+                        />
+                      </div>
+                    )}
+                    {/* Program monitor: main layer (incoming during fade/wipe, then solo; same key so no remount when transition ends) */}
+                    {isLive && (programCue || programOutgoingCue || programCrossfadeNextCue) && effectiveProgramCue && (
+                      <div
+                        key={`pgm-${effectiveProgramItemIdx}`}
+                        className="play-layer"
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          zIndex: 11,
+                          pointerEvents: 'none',
+                          opacity: programTransitionKind === 'wipe' ? 1 : (programCrossfadeNextCue ? programCrossfadeInOpacity : 1),
+                          transition: programTransitionKind === 'wipe' ? 'none' : (programCrossfadeNextCue ? `opacity ${programCrossfadeDuration}s ease` : 'none'),
+                          ...(programTransitionKind === 'wipe' ? { clipPath: getWipeClipPath((effectiveProgramCue.wipeDirection as WipeDirection) ?? wipeDirection, programWipeRevealPct) } : {}),
+                        }}
+                      >
+                        <MonitorLayer
+                          cue={effectiveProgramCue}
+                          mode={effectiveProgramCue?.mode ?? selectedMode}
+                          modeOpts={effectiveProgramCue ? getCueModeOpts(effectiveProgramCue, modeOpts) : modeOpts}
+                          captionStyle={effectiveProgramCue ? getCueCaptionStyle(effectiveProgramCue, captionStyle) : captionStyle}
+                          holdDuration={holdDuration}
+                          zoomScale={zoomScale}
+                          motionSpeed={motionSpeed}
+                          kbDirection={effectiveProgramCue?.kbAnim ?? kbDirection}
+                          userId={user?.id ?? null}
+                          showProgress={!programCrossfadeNextCue}
+                        />
+                      </div>
+                    )}
+                  </div>
+                  {/* EOC fade to black overlay */}
+                  {programEocFadeActive && programEocFadeTo === 'black' && (
                     <div
-                      key={`pgm-${programCueItemIdx}-${programGroupImageIdx}`}
-                      className="play-layer"
-                      style={{ position: 'absolute', inset: 0, zIndex: 10, pointerEvents: 'none' }}
-                    >
-                      <MonitorLayer
-                        cue={programCue}
-                        mode={effectiveProgramMode}
-                        modeOpts={effectiveProgramModeOpts}
-                        captionStyle={effectiveProgramCaptionStyle}
-                        holdDuration={holdDuration}
-                        zoomScale={zoomScale}
-                        motionSpeed={motionSpeed}
-                        kbDirection={programCue?.kbAnim ?? kbDirection}
-                        userId={user?.id ?? null}
-                        showProgress={true}
-                        groupSize={programGroupSize > 1 ? programGroupSize : undefined}
-                        groupProgressPct={programGroupSize > 1 ? progressPct : undefined}
-                      />
-                    </div>
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        zIndex: 20,
+                        pointerEvents: 'none',
+                        background: '#000',
+                        opacity: programEocFadeOverlayOpacity,
+                        transition: `opacity ${programEocFadeDuration}s ease`,
+                      }}
+                    />
                   )}
                   <div className="monitor-overlay-label pgm-label">PGM</div>
                   <div className={`playout-badge ${isLive ? 'vis' : ''}`}>● PLAYOUT</div>
@@ -1471,36 +1577,17 @@ export function Controller() {
             </div>
             <div className="t-zone-sep" />
             <div className="t-zone t-zone-progress">
-              {programGroupSize > 1 && (
-                <div className="progress-group-heading">
-                  Group progress — image {programGroupImageIdxSafe + 1} of {programGroupSize} · total {programTotalDur}s
-                </div>
-              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div
-                  className={`progress-track progress-track-with-markers ${programGroupSize > 1 ? 'is-group' : ''}`}
-                  style={{ flex: 1, position: 'relative' }}
-                  title={programGroupSize > 1 ? `Total group: ${programTotalDur}s. Markers show where each image ends.` : undefined}
-                >
+                <div className="progress-track" style={{ flex: 1, position: 'relative' }} title={`Current cue: ${programTotalDur}s`}>
                   <div ref={progressFillRef} className="progress-fill" id="progressFill" style={{ width: `${progressPct}%` }} />
-                  {programGroupSize > 1 && Array.from({ length: programGroupSize - 1 }, (_, i) => (
-                    <div
-                      key={i}
-                      className="progress-marker"
-                      style={{ left: `${((i + 1) / programGroupSize) * 100}%` }}
-                      title={`Image ${i + 2} ends at ${Math.round(((i + 1) / programGroupSize) * programTotalDur)}s`}
-                    />
-                  ))}
                 </div>
               </div>
-              <div className="progress-labels">
+              <div className="progress-labels progress-labels--centered">
                 <span title="Elapsed">{isLive ? timeElapsed : '—'}</span>
                 <span title="Remaining (countdown)">{isLive ? timeRemain : '—'}</span>
-                {programGroupSize > 1 && (
-                  <span className="progress-group-info" title={`Image ${programGroupImageIdxSafe + 1} of ${programGroupSize} · ${programTotalDur}s total`}>
-                    {programGroupImageIdxSafe + 1}/{programGroupSize} · {programTotalDur}s total
-                  </span>
-                )}
+              </div>
+              <div className="progress-status" title={isLive ? 'Time remaining on current cue' : 'Playback stopped'}>
+                {isLive ? `Current cue time remaining: ${timeRemain}` : 'Not running'}
               </div>
             </div>
             <div className="t-zone-sep" />
@@ -1529,7 +1616,7 @@ export function Controller() {
                 <option value="black">Black</option>
                 <option value="transparent">Transparent</option>
               </select>
-              <button type="button" className="pgm-btn cut-btn" title="Cut program to black" onClick={() => { setIsLive(false); sendToPlayout({ type: 'stop' }, playoutWindowRef.current); }}>✕ CLEAR</button>
+              <button type="button" className="pgm-btn cut-btn" title="Cut program to black" onClick={() => { setProgramEocFadeActive(false); setProgramEocFadeOverlayOpacity(0); setProgramEocContentOpacity(1); setIsLive(false); sendToPlayout({ type: 'stop' }, playoutWindowRef.current); }}>✕ CLEAR</button>
             </div>
             <div className="t-zone-sep" />
             <div className="t-zone t-zone-take">
@@ -1548,8 +1635,38 @@ export function Controller() {
 
         {/* RIGHT: SETTINGS */}
         <div className="panel panel-right">
-          <div className="settings-scroll">
-            <div className="coll-sec">
+          <div className="settings-scroll" ref={settingsScrollRef}>
+            <div className="settings-search-wrap">
+              <input
+                type="search"
+                className="settings-search-input"
+                placeholder="Search settings…"
+                value={settingsSearchQuery}
+                onChange={(e) => setSettingsSearchQuery(e.target.value)}
+                aria-label="Search settings"
+              />
+              {!settingsSearchQuery.trim() && (
+                <div className="settings-section-index">
+                  {SECTION_KEYS.map((key) => (
+                    <button
+                      key={key}
+                      type="button"
+                      className="settings-section-chip"
+                      onClick={() => scrollToSection(key)}
+                      title={`Jump to ${SECTION_META[key].label}`}
+                    >
+                      {SECTION_META[key].label}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {settingsSearchQuery.trim() && (
+                <div className="settings-search-hint">
+                  {visibleSectionKeys.length} section{visibleSectionKeys.length !== 1 ? 's' : ''} match
+                </div>
+              )}
+            </div>
+            <div className={`coll-sec ${!visibleSectionKeys.includes('aiAnalysis') ? 'settings-section-hidden' : ''}`} ref={(el) => { settingsSectionRefs.current.aiAnalysis = el; }} data-section="aiAnalysis">
               <div className={`coll-hdr ${openSections.aiAnalysis ? 'open' : ''}`} onClick={() => toggleSection('aiAnalysis')}>
                 <div className="sec-label">AI Analysis</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -1649,8 +1766,8 @@ export function Controller() {
               </div>
             </div>
 
-            <div className={`coll-sec ${panelAppliesToGroup && !panelCanEditCue ? 'panel-cue-disabled-sec' : ''}`}>
-              <div className={`coll-hdr ${openSections.playbackMode ? 'open' : ''}`} onClick={() => !(panelAppliesToGroup && !panelCanEditCue) && toggleSection('playbackMode')}>
+            <div className={`coll-sec ${false ? 'panel-cue-disabled-sec' : ''} ${!visibleSectionKeys.includes('playbackMode') ? 'settings-section-hidden' : ''}`} ref={(el) => { settingsSectionRefs.current.playbackMode = el; }} data-section="playbackMode">
+              <div className={`coll-hdr ${openSections.playbackMode ? 'open' : ''}`} onClick={() => !(false) && toggleSection('playbackMode')}>
                 <div className="sec-label">Playback Mode {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelMode === 'fullscreen' ? 'Full Screen' : panelMode === 'blurbg' ? 'Blur BG' : 'Split'}</span>
@@ -1658,7 +1775,7 @@ export function Controller() {
                 </div>
               </div>
               <div className={`coll-body ${openSections.playbackMode ? 'open' : ''}`}>
-                {panelAppliesToGroup && !panelCanEditCue ? (
+                {false ? (
                   <div className="panel-cue-disabled">
                     <p className="panel-cue-disabled-msg">Select an image in the group to adjust settings.</p>
                   </div>
@@ -1715,12 +1832,47 @@ export function Controller() {
                   <div className="mode-sub-lbl">BLUR BACKGROUND OPTIONS</div>
                   <div className="ctrl-row">
                     <div className="ctrl-label">Blur Amount <em>{panelModeOpts.blurbg?.blurAmount ?? 28}px</em></div>
-                    <input type="range" min={4} max={60} value={panelModeOpts.blurbg?.blurAmount ?? 28} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...m.blurbg, blurAmount: Number(e.target.value) } }))} />
+                    <input type="range" min={4} max={60} value={panelModeOpts.blurbg?.blurAmount ?? 28} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, blurAmount: Number(e.target.value) } }))} />
                   </div>
-                  <div className="ctrl-row" style={{ marginBottom: 0 }}>
+                  <div className="ctrl-row">
                     <div className="ctrl-label">BG Brightness <em>{Math.round((panelModeOpts.blurbg?.bgBrightness ?? 0.45) * 100)}%</em></div>
-                    <input type="range" min={5} max={90} value={Math.round((panelModeOpts.blurbg?.bgBrightness ?? 0.45) * 100)} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...m.blurbg, bgBrightness: Number(e.target.value) / 100 } }))} />
+                    <input type="range" min={5} max={90} value={Math.round((panelModeOpts.blurbg?.bgBrightness ?? 0.45) * 100)} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, bgBrightness: Number(e.target.value) / 100 } }))} />
                   </div>
+                  <div className="ctrl-row">
+                    <div className="ctrl-label">Frame width <em>{panelModeOpts.blurbg?.frameWidth ?? 70}%</em></div>
+                    <input type="range" min={30} max={100} value={panelModeOpts.blurbg?.frameWidth ?? 70} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, frameWidth: Number(e.target.value) } }))} />
+                  </div>
+                  <div className="ctrl-row">
+                    <div className="ctrl-label">Frame height <em>{panelModeOpts.blurbg?.frameHeight ?? 70}%</em></div>
+                    <input type="range" min={30} max={100} value={panelModeOpts.blurbg?.frameHeight ?? 70} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, frameHeight: Number(e.target.value) } }))} />
+                  </div>
+                  <div className="ctrl-row">
+                    <div className="ctrl-label">Fill frame <em>{panelModeOpts.blurbg?.fillFrame !== false ? 'On' : 'Off'}</em></div>
+                    <div className="sel-row-2" style={{ marginTop: 4 }}>
+                      <button type="button" className={`sel-btn ${panelModeOpts.blurbg?.fillFrame === false ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, fillFrame: false } }))}>OFF</button>
+                      <button type="button" className={`sel-btn ${panelModeOpts.blurbg?.fillFrame !== false ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, fillFrame: true } }))}>ON</button>
+                    </div>
+                    <div className="ctrl-hint" style={{ marginTop: 2 }}>Pre-zoom image to fill frame edge-to-edge (no empty space). Motion presets run on top.</div>
+                  </div>
+                  <div className="ctrl-row">
+                    <div className="ctrl-label">Border <em>{panelModeOpts.blurbg?.showBorder ? 'On' : 'Off'}</em></div>
+                    <div className="sel-row-2" style={{ marginTop: 4 }}>
+                      <button type="button" className={`sel-btn ${!panelModeOpts.blurbg?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, showBorder: false } }))}>OFF</button>
+                      <button type="button" className={`sel-btn ${panelModeOpts.blurbg?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, showBorder: true } }))}>ON</button>
+                    </div>
+                  </div>
+                  {(panelModeOpts.blurbg?.showBorder) && (
+                    <>
+                      <div className="ctrl-row">
+                        <div className="ctrl-label">Border width <em>{panelModeOpts.blurbg?.borderWidth ?? 2}px</em></div>
+                        <input type="range" min={1} max={12} value={panelModeOpts.blurbg?.borderWidth ?? 2} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, borderWidth: Number(e.target.value) } }))} />
+                      </div>
+                      <div className="ctrl-row" style={{ marginBottom: 0 }}>
+                        <div className="ctrl-label">Border color</div>
+                        <input type="color" value={panelModeOpts.blurbg?.borderColor ?? '#ffffff'} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, borderColor: e.target.value } }))} style={{ width: 40, height: 28, padding: 0, border: '1px solid var(--border2)', borderRadius: 4 }} />
+                      </div>
+                    </>
+                  )}
                 </div>
                 <div className={`mode-sub ${panelMode === 'split' ? 'active' : ''}`}>
                   <div className="mode-sub-lbl">SPLIT LAYOUT OPTIONS</div>
@@ -1766,8 +1918,8 @@ export function Controller() {
               </div>
             </div>
 
-            <div className={`coll-sec ${panelAppliesToGroup && !panelCanEditCue ? 'panel-cue-disabled-sec' : ''}`}>
-              <div className={`coll-hdr ${openSections.timing ? 'open' : ''}`} onClick={() => !(panelAppliesToGroup && !panelCanEditCue) && toggleSection('timing')}>
+            <div className={`coll-sec ${false ? 'panel-cue-disabled-sec' : ''} ${!visibleSectionKeys.includes('timing') ? 'settings-section-hidden' : ''}`} ref={(el) => { settingsSectionRefs.current.timing = el; }} data-section="timing">
+              <div className={`coll-hdr ${openSections.timing ? 'open' : ''}`} onClick={() => !(false) && toggleSection('timing')}>
                 <div className="sec-label">Timing {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelHoldDuration}s · FADE {panelFadeInDur}/{panelFadeOutDur}</span>
@@ -1775,7 +1927,7 @@ export function Controller() {
                 </div>
               </div>
               <div className={`coll-body ${openSections.timing ? 'open' : ''}`}>
-                {panelAppliesToGroup && !panelCanEditCue ? (
+                {false ? (
                   <div className="panel-cue-disabled">
                     <p className="panel-cue-disabled-msg">Select an image in the group to adjust settings.</p>
                   </div>
@@ -1785,12 +1937,6 @@ export function Controller() {
                   <div className="ctrl-label">Hold Duration <em>{panelHoldDuration}s</em></div>
                   <input type="range" min={2} max={60} value={panelHoldDuration} onChange={(e) => setPanelHoldDuration(Number(e.target.value))} />
                 </div>
-                {panelCueIsInGroup ? (
-                  <div className="panel-cue-disabled" style={{ marginTop: 8 }}>
-                    <p className="panel-cue-disabled-msg">Fade in/out are controlled by the group. Set them in End of Cue (this group).</p>
-                  </div>
-                ) : (
-                <>
                 <div className="timing-row">
                   <div className="timing-field">
                     <label>FADE IN (s)</label>
@@ -1810,14 +1956,12 @@ export function Controller() {
                 </div>
                 </>
                 )}
-                </>
-                )}
               </div>
             </div>
 
-            <div className="coll-sec">
+            <div className={`coll-sec ${!visibleSectionKeys.includes('eoc') ? 'settings-section-hidden' : ''}`} ref={(el) => { settingsSectionRefs.current.eoc = el; }} data-section="eoc">
               <div className={`coll-hdr ${openSections.eoc ? 'open' : ''}`} onClick={() => toggleSection('eoc')}>
-                <div className="sec-label">End of Cue {panelAppliesToGroup && <span className="sec-applies">(this group)</span>}{panelAppliesToCue && !panelAppliesToGroup && <span className="sec-applies">(this cue)</span>}</div>
+                <div className="sec-label">End of Cue {panelAppliesToCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelEndOfCueBehavior === 'hold' ? 'HOLD' : panelEndOfCueBehavior === 'fade' ? 'FADE' : 'CLEAR'}</span>
                   <span className="coll-chevron">▶</span>
@@ -1834,45 +1978,11 @@ export function Controller() {
                 <div className="eoc-hint" style={{ marginTop: 10 }}>
                   HOLD: stay on last frame. FADE: uses the Fade out time from Timing (above). CLEAR: cut to black.
                 </div>
-                {panelAppliesToGroup && (
-                  <>
-                    <div className="ctrl-row" style={{ marginTop: 12 }}>
-                      <div className="ctrl-label">Between images</div>
-                      <div className="sel-row-3" style={{ flex: 1, justifyContent: 'flex-start' }}>
-                        <button type="button" className={`sel-btn ${panelGroupTransitionBetween === 'cut' ? 'on-b' : ''}`} onClick={() => setPanelGroupTransitionBetween('cut')}>Cut</button>
-                        <button type="button" className={`sel-btn ${panelGroupTransitionBetween === 'crossfade' ? 'on-b' : ''}`} onClick={() => setPanelGroupTransitionBetween('crossfade')}>Crossfade</button>
-                      </div>
-                    </div>
-                    {panelGroupTransitionBetween === 'crossfade' && (
-                      <div className="ctrl-row" style={{ marginTop: 8 }}>
-                        <div className="ctrl-label">Crossfade duration <em>{panelGroupTransitionBetweenDuration}s</em></div>
-                        <input type="range" min={0.5} max={2} step={0.1} value={panelGroupTransitionBetweenDuration} onChange={(e) => setPanelGroupTransitionBetweenDuration(Number(e.target.value))} />
-                      </div>
-                    )}
-                    <div className="ctrl-row" style={{ marginTop: 12 }}>
-                      <div className="ctrl-label">Group fade in (s)</div>
-                      <input type="number" min={0} max={10} step={0.1} value={panelGroupFadeIn} onChange={(e) => setPanelGroupFadeIn(Number(e.target.value) || 0)} style={{ width: 56 }} />
-                    </div>
-                    <div className="ctrl-row" style={{ marginTop: 4 }}>
-                      <div className="ctrl-label">Group fade out (s)</div>
-                      <input type="number" min={0} max={10} step={0.1} value={panelGroupFadeOut} onChange={(e) => setPanelGroupFadeOut(Number(e.target.value) || 0)} style={{ width: 56 }} />
-                    </div>
-                    {panelEndOfCueBehavior === 'fade' && (
-                      <div className="ctrl-row" style={{ marginTop: 8, marginBottom: 0 }}>
-                        <div className="ctrl-label">Fade to</div>
-                        <div className="sel-row-3" style={{ flex: 1, justifyContent: 'flex-start' }}>
-                          <button type="button" className={`sel-btn ${panelGroupFadeTo === 'black' ? 'on-b' : ''}`} onClick={() => setPanelGroupFadeTo('black')}>Black</button>
-                          <button type="button" className={`sel-btn ${panelGroupFadeTo === 'transparent' ? 'on-b' : ''}`} onClick={() => setPanelGroupFadeTo('transparent')}>Transparent</button>
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
               </div>
             </div>
 
-            <div className={`coll-sec ${panelAppliesToGroup && !panelCanEditCue ? 'panel-cue-disabled-sec' : ''}`}>
-              <div className={`coll-hdr ${openSections.motion ? 'open' : ''}`} onClick={() => !(panelAppliesToGroup && !panelCanEditCue) && toggleSection('motion')}>
+            <div className={`coll-sec ${!visibleSectionKeys.includes('motion') ? 'settings-section-hidden' : ''}`} ref={(el) => { settingsSectionRefs.current.motion = el; }} data-section="motion">
+              <div className={`coll-hdr ${openSections.motion ? 'open' : ''}`} onClick={() => toggleSection('motion')}>
                 <div className="sec-label">Motion {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelKbDirection === 'auto' ? 'Auto (AI)' : panelKbDirection}</span>
@@ -1880,7 +1990,7 @@ export function Controller() {
                 </div>
               </div>
               <div className={`coll-body ${openSections.motion ? 'open' : ''}`}>
-                {panelAppliesToGroup && !panelCanEditCue ? (
+                {false ? (
                   <div className="panel-cue-disabled">
                     <p className="panel-cue-disabled-msg">Select an image in the group to adjust settings.</p>
                   </div>
@@ -1923,7 +2033,7 @@ export function Controller() {
                           <button type="button" className={`kb-pick-btn ${kbEditingFrame === 'start' ? 'active-start' : ''}`} onClick={() => setKbEditingFrame((f) => (f === 'start' ? null : 'start'))}>View Start</button>
                           <button type="button" className={`kb-pick-btn ${kbEditingFrame === 'end' ? 'active-end' : ''}`} onClick={() => setKbEditingFrame((f) => (f === 'end' ? null : 'end'))}>View End</button>
                         </div>
-                        <ThumbnailOverlay imageSrc={previewCue.src} userId={user?.id ?? null} startXYZ={startXYZ} endXYZ={endXYZ} kbScale={kbScale} />
+                        <ThumbnailOverlay imageSrc={previewCue.src} userId={user?.id ?? null} startXYZ={startXYZ} endXYZ={endXYZ} kbScale={kbScale} editingFrame={kbEditingFrame} />
                         <div style={sectionStyle}>
                           <span style={{ ...labelStyle, color: '#f5c518' }}>▶ START</span>
                           <AxisSlider label="X" value={startXYZ.cx} min={X_MIN} max={X_MAX} step={1} color="#f5c518" onChange={(v) => setAxis('start', 'cx', v)} />
@@ -1971,8 +2081,8 @@ export function Controller() {
               </div>
             </div>
 
-            <div className={`coll-sec ${panelAppliesToGroup && !panelCanEditCue ? 'panel-cue-disabled-sec' : ''}`}>
-              <div className={`coll-hdr ${openSections.transition ? 'open' : ''}`} onClick={() => !(panelAppliesToGroup && !panelCanEditCue) && toggleSection('transition')}>
+            <div className={`coll-sec ${false ? 'panel-cue-disabled-sec' : ''} ${!visibleSectionKeys.includes('transition') ? 'settings-section-hidden' : ''}`} ref={(el) => { settingsSectionRefs.current.transition = el; }} data-section="transition">
+              <div className={`coll-hdr ${openSections.transition ? 'open' : ''}`} onClick={() => !(false) && toggleSection('transition')}>
                 <div className="sec-label">Transition {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelTransitionType.toUpperCase()} · {panelTransDuration}s</span>
@@ -1980,7 +2090,7 @@ export function Controller() {
                 </div>
               </div>
               <div className={`coll-body ${openSections.transition ? 'open' : ''}`}>
-                {panelAppliesToGroup && !panelCanEditCue ? (
+                {false ? (
                   <div className="panel-cue-disabled">
                     <p className="panel-cue-disabled-msg">Select an image in the group to adjust settings.</p>
                   </div>
@@ -2004,7 +2114,7 @@ export function Controller() {
                 {panelTransitionType === 'wipe' && (
                 <div className="ctrl-row" style={{ marginTop: 8, marginBottom: 0, flexWrap: 'wrap', gap: 6 }}>
                   <div className="ctrl-label" style={{ width: '100%' }}>Wipe direction</div>
-                  {WIPE_DIRECTIONS.map((d) => (
+                  {WIPE_DIRECTIONS_CARDINAL.map((d) => (
                     <button
                       key={d}
                       type="button"
@@ -2012,7 +2122,7 @@ export function Controller() {
                       onClick={() => setPanelWipeDirection(d)}
                       title={d}
                     >
-                      {d === 'left' ? '← L' : d === 'right' ? '→ R' : d === 'up' ? '↑ U' : d === 'down' ? '↓ D' : d === 'diagonal-tl-br' ? '↘ TL→BR' : d === 'diagonal-br-tl' ? '↗ BR→TL' : d === 'diagonal-tr-bl' ? '↙ TR→BL' : '↖ BL→TR'}
+                      {d === 'left' ? '← Left' : d === 'right' ? '→ Right' : d === 'up' ? '↑ Up' : '↓ Down'}
                     </button>
                   ))}
                 </div>
@@ -2043,8 +2153,8 @@ export function Controller() {
               </div>
             </div>
 
-            <div className={`coll-sec ${panelAppliesToGroup && !panelCanEditCue ? 'panel-cue-disabled-sec' : ''}`}>
-              <div className={`coll-hdr ${openSections.caption ? 'open' : ''}`} onClick={() => !(panelAppliesToGroup && !panelCanEditCue) && toggleSection('caption')}>
+            <div className={`coll-sec ${false ? 'panel-cue-disabled-sec' : ''} ${!visibleSectionKeys.includes('caption') ? 'settings-section-hidden' : ''}`} ref={(el) => { settingsSectionRefs.current.caption = el; }} data-section="caption">
+              <div className={`coll-hdr ${openSections.caption ? 'open' : ''}`} onClick={() => !(false) && toggleSection('caption')}>
                 <div className="sec-label">Caption {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} onClick={(e) => e.stopPropagation()}>
                   <div className="caption-toggle-pill">
@@ -2055,7 +2165,7 @@ export function Controller() {
                 </div>
               </div>
               <div className={`coll-body ${openSections.caption ? 'open' : ''}`}>
-                {panelAppliesToGroup && !panelCanEditCue ? (
+                {false ? (
                   <div className="panel-cue-disabled">
                     <p className="panel-cue-disabled-msg">Select an image in the group to adjust settings.</p>
                   </div>
@@ -2122,6 +2232,42 @@ export function Controller() {
                   <label>OPACITY</label>
                   <input type="range" min={0} max={100} value={panelCaptionStyle.bgOpacity} onChange={(e) => setPanelCaptionStyle((c) => ({ ...c, bgOpacity: Number(e.target.value) }))} />
                   <span style={{ fontFamily: "'DM Mono'", fontSize: 9, color: 'var(--text2)', minWidth: 28 }}>{panelCaptionStyle.bgOpacity}%</span>
+                </div>
+                <div className="caption-opacity-row" style={{ marginTop: 6 }}>
+                  <label>TEXT SIZE</label>
+                  <select
+                    value={String(panelCaptionStyle.textScale ?? 1)}
+                    onChange={(e) => setPanelCaptionStyle((c) => ({ ...c, textScale: Number(e.target.value) }))}
+                    style={{
+                      padding: '4px 8px',
+                      fontFamily: "'DM Mono'",
+                      fontSize: 11,
+                      background: 'var(--s3)',
+                      border: '1px solid var(--border2)',
+                      borderRadius: 4,
+                      color: 'var(--text)',
+                      outline: 'none',
+                    }}
+                  >
+                    <option value="0.75">75%</option>
+                    <option value="0.9">90%</option>
+                    <option value="1">100%</option>
+                    <option value="1.1">110%</option>
+                    <option value="1.25">125%</option>
+                    <option value="1.5">150%</option>
+                  </select>
+                </div>
+                <div className="caption-opacity-row" style={{ marginTop: 6 }}>
+                  <label>Y ADJUST</label>
+                  <input
+                    type="range"
+                    min={-80}
+                    max={80}
+                    value={panelCaptionStyle.offsetY ?? 0}
+                    onChange={(e) => setPanelCaptionStyle((c) => ({ ...c, offsetY: Number(e.target.value) }))}
+                    style={{ flex: 1, maxWidth: 120 }}
+                  />
+                  <span style={{ fontFamily: "'DM Mono'", fontSize: 9, color: 'var(--text2)', minWidth: 32 }}>{panelCaptionStyle.offsetY ?? 0}px</span>
                 </div>
                 <div className="caption-preview-bar" style={{ marginTop: 12 }}>
                   <div className="cpb-bg" />
@@ -2324,6 +2470,7 @@ export function Controller() {
           </div>
         </div>
       )}
+
     </>
   );
 }
