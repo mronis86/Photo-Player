@@ -131,8 +131,9 @@ export function connectToPlayoutChannelAsPlayout(
   if (!supabase) return Promise.reject(new Error('Supabase not configured'));
   const name = getRealtimeChannelName(code);
   const channel = supabase.channel(name);
-  channel.on('broadcast', { event: REALTIME_EVENT }, (p: { payload: PlayoutMessage }) => {
-    onMessage(p.payload);
+  // Cast to any so Supabase Realtime typings don't infer onMessage param (TS2322)
+  (channel as any).on('broadcast', { event: REALTIME_EVENT }, (p: { payload?: unknown }) => {
+    onMessage((p.payload ?? {}) as PlayoutMessage);
   });
   return new Promise((resolve, reject) => {
     channel.subscribe((status) => {
