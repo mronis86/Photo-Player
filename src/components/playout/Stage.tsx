@@ -615,7 +615,6 @@ export function Stage() {
   useEffect(() => { setBlurPayloadImageSize(null); }, [payload, payload?.src]);
   useEffect(() => { setBlurDisplayImageSize(null); }, [payload, nextPayload, nextPayload?.src, payload?.src]);
 
-  const showIdle = !payload;
   const imgSrc = payload ? getImageSrc(payload) : '';
   const mo = payload?.modeOpts ?? {};
   const cs = payload?.captionStyle ?? {};
@@ -636,22 +635,9 @@ export function Stage() {
 
   /** Main layer shows incoming during crossfade, then solo; same key after commit so it doesn't remount/jump */
   const displayPayload = nextPayload ?? payload;
-  const imgSrcNext = nextPayload ? getImageSrc(nextPayload) : '';
   const imgSrcDisplay = displayPayload ? getImageSrc(displayPayload) : '';
-  const moNext = nextPayload?.modeOpts ?? {};
-  const csNext = nextPayload?.captionStyle ?? {};
   const moDisplay = displayPayload?.modeOpts ?? {};
   const csDisplay = displayPayload?.captionStyle ?? {};
-  const objFitNext = (moNext.objectFit as string) ?? 'cover';
-  const vignetteNext = (moNext as { vignette?: boolean }).vignette ?? false;
-  const blurAmountNext = (moNext as { blurAmount?: number }).blurAmount ?? 28;
-  const bgBrightnessNext = (moNext as { bgBrightness?: number }).bgBrightness ?? 0.45;
-  const photoSideNext = (moNext as { splitImageSide?: string }).splitImageSide ?? 'left';
-  const textAlignNext = (moNext as { splitTextAlign?: string }).splitTextAlign ?? 'left';
-  const isCenterNext = photoSideNext === 'center';
-  const centerWNext = (moNext as { splitCenterWidth?: number }).splitCenterWidth ?? 40;
-  const centerHNext = (moNext as { splitCenterHeight?: number }).splitCenterHeight ?? 45;
-  const splitImgWidthNext = (moNext as { splitImgWidth?: number }).splitImgWidth ?? 55;
 
   const handleConnect = useCallback(() => {
     const code = codeInput.trim().toUpperCase();
