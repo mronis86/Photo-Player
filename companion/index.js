@@ -16,6 +16,7 @@ const SUPABASE_ANON_KEY = (process.env.SUPABASE_ANON_KEY || process.env.VITE_SUP
 
 const COMPANION_EVENT_STATE = 'companion_state';
 const COMPANION_EVENT_CMD = 'companion_cmd';
+const COMPANION_EVENT_REQUEST_STATE = 'companion_request_state';
 
 function getCompanionChannelName(code) {
   return `companion:${String(code).trim().toUpperCase()}`;
@@ -50,6 +51,8 @@ function getOrCreateChannel(code) {
   channelsByCode.set(key, entry);
   channel.on('broadcast', { event: COMPANION_EVENT_STATE }, ({ payload }) => {
     entry.state = payload;
+    const cueCount = Array.isArray(payload?.cues) ? payload.cues.length : 0;
+    console.log(`[Companion API] state received code=${key} cues=${cueCount} liveIndex=${payload?.liveIndex ?? -1}`);
     entry.wsClients.forEach((ws) => {
       if (ws.readyState === 1) {
         try {
@@ -58,7 +61,17 @@ function getOrCreateChannel(code) {
       }
     });
   });
-  channel.subscribe();
+  channel.subscribe((status) => {
+    if (status === 'SUBSCRIBED') {
+      console.log(`[Companion API] subscribed code=${key}, requesting state`);
+      channel.send({
+        type: 'broadcast',
+        event: COMPANION_EVENT_REQUEST_STATE,
+        payload: {},
+      });
+    }
+  });
+  console.log(`[Companion API] new channel code=${key}`);
   return entry;
 }
 
@@ -83,7 +96,10 @@ function requireCode(req, res, next) {
 // --- Fetch ---
 app.get('/state', requireCode, (req, res) => {
   const entry = getOrCreateChannel(req.companionCode);
-  res.json(entry.state || { liveIndex: -1, nextIndex: 0, isLive: false, playoutConnected: false, cues: [] });
+  const state = entry.state || { liveIndex: -1, nextIndex: 0, isLive: false, playoutConnected: false, cues: [] };
+  const cueCount = Array.isArray(state.cues) ? state.cues.length : 0;
+  console.log(`[Companion API] GET /state code=${req.companionCode} hasState=${!!entry.state} cues=${cueCount}`);
+  res.json(state);
 });
 
 app.get('/cues', requireCode, (req, res) => {
@@ -95,6 +111,8 @@ app.get('/cues', requireCode, (req, res) => {
 // --- Trigger ---
 function sendCommand(code, payload) {
   const entry = getOrCreateChannel(code);
+  const cmdStr = payload.type === 'cue' ? `cue ${payload.cueIndex}` : payload.type === 'fade' ? `fade ${payload.fadeTo}` : payload.type;
+  console.log(`[Companion API] command code=${code} ${cmdStr}`);
   entry.channel.send({
     type: 'broadcast',
     event: COMPANION_EVENT_CMD,

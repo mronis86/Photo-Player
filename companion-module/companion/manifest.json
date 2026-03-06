@@ -1,0 +1,21 @@
+{
+  "id": "image-motion-playback",
+  "name": "Image Motion Playback",
+  "shortname": "image-motion-playback",
+  "description": "Control FotoFlow Image Motion Playback (same connection code as playout). Talks to Railway Companion API.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "repository": "",
+  "bugs": "",
+  "maintainers": [],
+  "runtime": {
+    "type": "node18",
+    "api": "nodejs-ipc",
+    "apiVersion": "0.0.0",
+    "entrypoint": "../src/main.js"
+  },
+  "legacyIds": [],
+  "manufacturer": "FotoFlow",
+  "products": ["Image Motion Playback"],
+  "keywords": ["fotoflow", "image", "motion", "playback", "cue", "take", "companion api"]
+}

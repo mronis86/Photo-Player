@@ -356,6 +356,7 @@ export function Controller() {
   const connectionCodeRef = useRef<string>('');
   const playoutLastSeenRef = useRef<number>(0);
   const companionSendStateRef = useRef<((s: CompanionStatePayload) => void) | null>(null);
+  const companionStateRef = useRef<CompanionStatePayload | null>(null);
   const companionTakeRef = useRef<(() => void) | null>(null);
   const companionNextRef = useRef<(() => void) | null>(null);
   const companionPrevRef = useRef<(() => void) | null>(null);
@@ -518,29 +519,37 @@ export function Controller() {
   useEffect(() => {
     const code = connectionCode.trim().toUpperCase();
     if (!code) return;
-    const { unsubscribe, sendState } = joinCompanionChannelAsController(code, (cmd: CompanionCommandPayload) => {
-      if (cmd.type === 'take') companionTakeRef.current?.();
-      if (cmd.type === 'next') companionNextRef.current?.();
-      if (cmd.type === 'prev') companionPrevRef.current?.();
-      if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
-      if (cmd.type === 'clear') companionClearRef.current?.();
-      if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
-    });
+    const { unsubscribe, sendState } = joinCompanionChannelAsController(
+      code,
+      (cmd: CompanionCommandPayload) => {
+        const cmdStr = cmd.type === 'cue' ? `cue ${cmd.cueIndex}` : cmd.type === 'fade' ? `fade ${cmd.fadeTo}` : cmd.type;
+        console.log('[Companion] Command received:', cmdStr);
+        if (cmd.type === 'take') companionTakeRef.current?.();
+        if (cmd.type === 'next') companionNextRef.current?.();
+        if (cmd.type === 'prev') companionPrevRef.current?.();
+        if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
+        if (cmd.type === 'clear') companionClearRef.current?.();
+        if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
+      },
+      {
+        onRequestState: () => {
+          const payload = companionStateRef.current;
+          const send = companionSendStateRef.current;
+          if (payload && send) {
+            send(payload);
+            console.log('[Companion] Sent state (requested by API), cues:', payload.cues?.length ?? 0);
+          }
+        },
+      }
+    );
     companionSendStateRef.current = sendState;
+    console.log('[Companion] Channel joined, code:', code);
     return () => {
       companionSendStateRef.current = null;
       unsubscribe();
+      console.log('[Companion] Channel left');
     };
   }, [connectionCode]);
-
-  useEffect(() => {
-    companionTakeRef.current = handleTakeToProgram;
-    companionNextRef.current = () => handleSelectPrevNext(1);
-    companionPrevRef.current = () => handleSelectPrevNext(-1);
-    companionGoToCueRef.current = handleGoToCueIndex;
-    companionClearRef.current = handleCompanionClear;
-    companionFadeRef.current = handleCompanionFade;
-  }, [handleTakeToProgram, handleSelectPrevNext, handleGoToCueIndex, handleCompanionClear, handleCompanionFade]);
 
   useEffect(() => {
     const send = companionSendStateRef.current;
@@ -556,14 +565,28 @@ export function Controller() {
         captionTitle: cue?.captionTitle ?? cue?.analysis?.caption,
       };
     });
-    send({
+    const payload: CompanionStatePayload = {
       liveIndex: programCueItemIdx,
       nextIndex: nextIndex >= 0 ? nextIndex : 0,
       isLive,
       playoutConnected,
       cues: cuesSummary,
-    });
+    };
+    companionStateRef.current = payload;
+    send(payload);
+    console.log('[Companion] State sent, cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIndex >= 0 ? nextIndex : 0);
   }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected]);
+
+  // Re-broadcast state every 2.5s so Companion API/module gets cues soon after connecting
+  useEffect(() => {
+    if (!connectionCode) return;
+    const id = setInterval(() => {
+      const payload = companionStateRef.current;
+      const send = companionSendStateRef.current;
+      if (payload && send) send(payload);
+    }, 2500);
+    return () => clearInterval(id);
+  }, [connectionCode]);
 
   useEffect(() => {
     try {
@@ -1020,6 +1043,15 @@ export function Controller() {
       sendToPlayout({ type: 'stop' }, playoutWindowRef.current);
     }, dur * 1000);
   }, [fadeOutDur]);
+
+  useEffect(() => {
+    companionTakeRef.current = handleTakeToProgram;
+    companionNextRef.current = () => handleSelectPrevNext(1);
+    companionPrevRef.current = () => handleSelectPrevNext(-1);
+    companionGoToCueRef.current = handleGoToCueIndex;
+    companionClearRef.current = handleCompanionClear;
+    companionFadeRef.current = handleCompanionFade;
+  }, [handleTakeToProgram, handleSelectPrevNext, handleGoToCueIndex, handleCompanionClear, handleCompanionFade]);
 
   const moveCueInSection = useCallback((sectionId: string, cueId: string, direction: -1 | 1) => {
     setSections((prev) => prev.map((s) => {

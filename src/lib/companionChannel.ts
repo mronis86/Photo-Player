@@ -8,6 +8,7 @@ import { supabase } from './supabase';
 
 export const COMPANION_EVENT_STATE = 'companion_state';
 export const COMPANION_EVENT_CMD = 'companion_cmd';
+export const COMPANION_EVENT_REQUEST_STATE = 'companion_request_state';
 
 export function getCompanionChannelName(code: string): string {
   return `companion:${String(code).trim().toUpperCase()}`;
@@ -37,9 +38,15 @@ export interface CompanionCommandPayload {
   fadeTo?: 'black' | 'transparent';
 }
 
+export interface JoinCompanionChannelOptions {
+  /** When the API (or another client) requests state, call this so the controller sends current state. */
+  onRequestState?: () => void;
+}
+
 export function joinCompanionChannelAsController(
   code: string,
-  onCommand: (cmd: CompanionCommandPayload) => void
+  onCommand: (cmd: CompanionCommandPayload) => void,
+  options?: JoinCompanionChannelOptions
 ): { unsubscribe: () => void; sendState: (state: CompanionStatePayload) => void } {
   if (!supabase) {
     return {
@@ -51,6 +58,9 @@ export function joinCompanionChannelAsController(
   const channel = supabase.channel(name);
   channel.on('broadcast', { event: COMPANION_EVENT_CMD }, (p: { payload: CompanionCommandPayload }) => {
     onCommand(p.payload);
+  });
+  channel.on('broadcast', { event: COMPANION_EVENT_REQUEST_STATE }, () => {
+    options?.onRequestState?.();
   });
   channel.subscribe();
 

@@ -8,6 +8,8 @@ HTTP + **WebSocket** API for **Bitfocus Companion**. Uses the **same connection 
 
 Flow: **Companion → Railway (HTTP or WebSocket) → Supabase Realtime → Controller (browser)**.
 
+**Cue list / state:** The API does **not** read from any Supabase table or projects table. The **controller** (browser) holds the current project and cue list in memory and **broadcasts** state (liveIndex, nextIndex, cues, etc.) on the Realtime channel `companion:CODE`. The Railway API subscribes to that channel and **caches** the latest state in memory. When the Companion module polls `GET /state`, it gets that cached state. So: **controller → Realtime broadcast → API cache → module**. When you connect or change the cue list in the controller, it re-broadcasts; the API also requests state when it first subscribes so cues appear soon after the module connects.
+
 ---
 
 ## Deploy to Railway (no local install)
@@ -45,6 +47,8 @@ Base URL: your Railway URL (e.g. `https://your-app.railway.app`).
 | GET | `/health` | — | Health check. |
 
 Use the **same 6-character code** that appears in the controller and that the playout window uses.
+
+**Testing in Companion (presets, buttons):** see **[COMPANION_SETUP.md](./COMPANION_SETUP.md)** for step-by-step setup using Companion’s HTTP Request connection and copy-paste preset URLs (Take, Next, Prev, Cue 0–N, Clear, Fade). There is no custom Companion module in this repo; you use the built-in HTTP connection.
 
 ---
 

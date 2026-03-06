@@ -1,0 +1,26 @@
+{
+  "name": "companion-module-image-motion-playback",
+  "version": "1.0.0",
+  "main": "src/main.js",
+  "scripts": {
+    "format": "prettier -w .",
+    "package": "companion-module-build"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@companion-module/base": "~1.14.1"
+  },
+  "devDependencies": {
+    "@companion-module/tools": "^2.6.1",
+    "prettier": "^3.7.4"
+  },
+  "prettier": "@companion-module/tools/.prettierrc.json",
+  "packageManager": "yarn@4.12.0"
+}
