@@ -22,7 +22,7 @@ export interface CompanionCueSummary {
   captionTitle?: string;
   /** End-of-cue: 'hold' | 'fade' | 'clear'. */
   eoc?: string;
-  /** Label for the button: display name + " →" when auto-next (eoc !== 'hold'). Use this for button text. */
+  /** Label for the button: display name + " →" when cue has jumpToNext (Auto at end). Use this for button text. */
   buttonLabel?: string;
 }
 

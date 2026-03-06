@@ -591,24 +591,23 @@ export function Controller() {
   }
 
   // Send to Companion only when state actually changes. Prefer HTTP POST to Railway when VITE_COMPANION_API_URL is set.
-  const companionLastSentRef = useRef<{ liveIndex: number; nextIndex: number; isLive: boolean; playoutConnected: boolean; cuesLength: number; cueIdsKey: string; eocKey: string } | null>(null);
+  const companionLastSentRef = useRef<{ liveIndex: number; nextIndex: number; isLive: boolean; playoutConnected: boolean; cuesLength: number; cueIdsKey: string; arrowKey: string } | null>(null);
 
   useEffect(() => {
     const nextIndex = previewCueId != null ? flatCueIds.indexOf(previewCueId) : -1;
     const nextIdx = nextIndex >= 0 ? nextIndex : 0;
     const cuesSummary = flatCueIds.map((id, index) => {
       const cue = cues.find((c) => c.id === id);
-      const eoc = getCueEOC(cue, endOfCueBehavior);
       const baseName = cue?.displayName ?? cue?.captionTitle ?? cue?.analysis?.caption ?? cue?.name ?? '';
-      const autoNext = eoc !== 'hold';
-      const labelWithArrow = baseName + (autoNext ? ' →' : '');
+      const autoAtEnd = cue?.jumpToNext === true;
+      const labelWithArrow = baseName + (autoAtEnd ? ' →' : '');
       return {
         index,
         id,
         name: labelWithArrow,
         displayName: labelWithArrow,
         captionTitle: cue?.captionTitle ?? cue?.analysis?.caption,
-        eoc,
+        eoc: getCueEOC(cue, endOfCueBehavior),
         buttonLabel: labelWithArrow,
       };
     });
@@ -622,7 +621,7 @@ export function Controller() {
     companionStateRef.current = payload;
 
     const cueIdsKey = flatCueIds.join(',');
-    const eocKey = cuesSummary.map((c) => c.eoc || 'hold').join(',');
+    const arrowKey = cuesSummary.map((c) => (c.name?.includes('→') ? '1' : '0')).join(',');
     const prev = companionLastSentRef.current;
     const changed =
       !prev ||
@@ -632,7 +631,7 @@ export function Controller() {
       prev.playoutConnected !== playoutConnected ||
       prev.cuesLength !== cuesSummary.length ||
       prev.cueIdsKey !== cueIdsKey ||
-      prev.eocKey !== eocKey;
+      prev.arrowKey !== arrowKey;
 
     if (!changed) return;
 
@@ -643,7 +642,7 @@ export function Controller() {
       playoutConnected,
       cuesLength: cuesSummary.length,
       cueIdsKey,
-      eocKey,
+      arrowKey,
     };
 
     const code = companionCodeForSession;
