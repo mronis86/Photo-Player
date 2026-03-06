@@ -91,9 +91,20 @@ export async function saveProject(
   if (!user) throw new Error('Not signed in');
 
   const updated_at = new Date().toISOString();
-  const row = projectId
-    ? { id: projectId, user_id: user.id, name: name || 'Untitled', payload, updated_at }
-    : { user_id: user.id, name: name || 'Untitled', payload, updated_at, companion_code: generateCompanionCode() };
+  let row: Record<string, unknown>;
+
+  if (projectId) {
+    // Update: must include companion_code (NOT NULL). Fetch existing so we don't overwrite it.
+    const { data: existing } = await supabase
+      .from('projects')
+      .select('companion_code')
+      .eq('id', projectId)
+      .single();
+    const companion_code = (existing?.companion_code as string) ?? '';
+    row = { id: projectId, user_id: user.id, name: name || 'Untitled', payload, updated_at, companion_code };
+  } else {
+    row = { user_id: user.id, name: name || 'Untitled', payload, updated_at, companion_code: generateCompanionCode() };
+  }
 
   const { data, error } = await supabase
     .from('projects')
