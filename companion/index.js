@@ -94,9 +94,36 @@ function requireCode(req, res, next) {
 }
 
 // --- Fetch ---
-app.get('/state', requireCode, (req, res) => {
+// When we have no cached state, wait briefly for controller to respond to request_state (max 2s)
+function waitForState(entry, maxMs = 2000) {
+  return new Promise((resolve) => {
+    if (entry.state) {
+      resolve(entry.state);
+      return;
+    }
+    const start = Date.now();
+    const check = () => {
+      if (entry.state) {
+        resolve(entry.state);
+        return;
+      }
+      if (Date.now() - start >= maxMs) {
+        resolve(null);
+        return;
+      }
+      setTimeout(check, 100);
+    };
+    setTimeout(check, 150);
+  });
+}
+
+app.get('/state', requireCode, async (req, res) => {
   const entry = getOrCreateChannel(req.companionCode);
-  const state = entry.state || { liveIndex: -1, nextIndex: 0, isLive: false, playoutConnected: false, cues: [] };
+  let state = entry.state;
+  if (!state) {
+    state = await waitForState(entry);
+  }
+  state = state || { liveIndex: -1, nextIndex: 0, isLive: false, playoutConnected: false, cues: [] };
   const cueCount = Array.isArray(state.cues) ? state.cues.length : 0;
   console.log(`[Companion API] GET /state code=${req.companionCode} hasState=${!!entry.state} cues=${cueCount}`);
   res.json(state);

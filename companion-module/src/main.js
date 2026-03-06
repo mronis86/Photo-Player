@@ -93,7 +93,11 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 		try {
 			this.state = await this.fetch('/state')
 			this.cues = Array.isArray(this.state?.cues) ? this.state.cues : []
-			this.log('info', `State fetched code=${code} cues=${this.cues.length} hasState=${!!this.state}`)
+			const n = this.cues.length
+			this.log('info', `State fetched code=${code} cues=${n}`)
+			if (n === 0) {
+				this.log('info', `Cues=0: open controller in browser with same code (${code}) and a project that has cues, then wait a few seconds`)
+			}
 		} catch (err) {
 			this.state = null
 			this.cues = []

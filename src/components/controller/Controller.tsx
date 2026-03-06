@@ -577,15 +577,31 @@ export function Controller() {
     console.log('[Companion] State sent, cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIndex >= 0 ? nextIndex : 0);
   }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected]);
 
-  // Re-broadcast state every 2.5s so Companion API/module gets cues soon after connecting
+  // Re-broadcast state so Companion API/module gets cues: every 500ms for 10s, then every 2.5s
   useEffect(() => {
     if (!connectionCode) return;
-    const id = setInterval(() => {
+    const fastMs = 10000;
+    const fastInterval = 500;
+    const slowInterval = 2500;
+    const fastId = setInterval(() => {
       const payload = companionStateRef.current;
       const send = companionSendStateRef.current;
       if (payload && send) send(payload);
-    }, 2500);
-    return () => clearInterval(id);
+    }, fastInterval);
+    let slowId: ReturnType<typeof setInterval> | null = null;
+    const switchId = setTimeout(() => {
+      clearInterval(fastId);
+      slowId = setInterval(() => {
+        const payload = companionStateRef.current;
+        const send = companionSendStateRef.current;
+        if (payload && send) send(payload);
+      }, slowInterval);
+    }, fastMs);
+    return () => {
+      clearInterval(fastId);
+      clearTimeout(switchId);
+      if (slowId) clearInterval(slowId);
+    };
   }, [connectionCode]);
 
   useEffect(() => {

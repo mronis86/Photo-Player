@@ -53,6 +53,7 @@ Use these logs to confirm the controller, Railway API, and Companion module are 
 1. **Webapp:** Same **connection code** as in Companion, **project open with cues**, and in the console you see **`State sent, cues: N`** with **N &gt; 0**.
 2. **Railway:** In logs you see **`state received code=... cues=N`** with **N &gt; 0** for that code. If you never see this, the controller broadcast isn’t reaching the API (check code match and Supabase).
 3. **Companion:** In the module log you see **`State fetched ... cues=N`** with **N &gt; 0**. If you see **cues=0**, the API either has no state yet or returned empty; wait a few seconds and check Railway logs for **state received**.
+4. **Supabase:** Railway must use the **same** Supabase project as the webapp. In Railway → Variables, set **SUPABASE_URL** and **SUPABASE_ANON_KEY** to the same values as in your app (e.g. from `.env`: `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`). If they differ, the API and controller are on different Realtime and state never reaches the API.
 
 ---
 
