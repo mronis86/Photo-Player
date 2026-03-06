@@ -591,19 +591,25 @@ export function Controller() {
   }
 
   // Send to Companion only when state actually changes. Prefer HTTP POST to Railway when VITE_COMPANION_API_URL is set.
-  const companionLastSentRef = useRef<{ liveIndex: number; nextIndex: number; isLive: boolean; playoutConnected: boolean; cuesLength: number; cueIdsKey: string } | null>(null);
+  const companionLastSentRef = useRef<{ liveIndex: number; nextIndex: number; isLive: boolean; playoutConnected: boolean; cuesLength: number; cueIdsKey: string; eocKey: string } | null>(null);
 
   useEffect(() => {
     const nextIndex = previewCueId != null ? flatCueIds.indexOf(previewCueId) : -1;
     const nextIdx = nextIndex >= 0 ? nextIndex : 0;
     const cuesSummary = flatCueIds.map((id, index) => {
       const cue = cues.find((c) => c.id === id);
+      const eoc = getCueEOC(cue, endOfCueBehavior);
+      const baseName = cue?.displayName ?? cue?.captionTitle ?? cue?.analysis?.caption ?? cue?.name ?? '';
+      const autoNext = eoc !== 'hold';
+      const labelWithArrow = baseName + (autoNext ? ' →' : '');
       return {
         index,
         id,
-        name: cue?.name ?? '',
-        displayName: cue?.displayName,
+        name: labelWithArrow,
+        displayName: labelWithArrow,
         captionTitle: cue?.captionTitle ?? cue?.analysis?.caption,
+        eoc,
+        buttonLabel: labelWithArrow,
       };
     });
     const payload: CompanionStatePayload = {
@@ -616,6 +622,7 @@ export function Controller() {
     companionStateRef.current = payload;
 
     const cueIdsKey = flatCueIds.join(',');
+    const eocKey = cuesSummary.map((c) => c.eoc || 'hold').join(',');
     const prev = companionLastSentRef.current;
     const changed =
       !prev ||
@@ -624,7 +631,8 @@ export function Controller() {
       prev.isLive !== isLive ||
       prev.playoutConnected !== playoutConnected ||
       prev.cuesLength !== cuesSummary.length ||
-      prev.cueIdsKey !== cueIdsKey;
+      prev.cueIdsKey !== cueIdsKey ||
+      prev.eocKey !== eocKey;
 
     if (!changed) return;
 
@@ -635,6 +643,7 @@ export function Controller() {
       playoutConnected,
       cuesLength: cuesSummary.length,
       cueIdsKey,
+      eocKey,
     };
 
     const code = companionCodeForSession;
@@ -679,7 +688,7 @@ export function Controller() {
         console.log('[Companion] State sent (Realtime), cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIdx);
       }
     }
-  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected, companionCodeForSession, companionApiUrl]);
+  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected, companionCodeForSession, companionApiUrl, endOfCueBehavior]);
 
   // Slow heartbeat: keep Supabase table and (if URL set) Railway in sync.
   useEffect(() => {
@@ -1157,6 +1166,7 @@ export function Controller() {
     setProgramEocFadeActive(false);
     setProgramEocFadeOverlayOpacity(0);
     setProgramEocContentOpacity(1);
+    setProgramCueItemIdx(-1);
     setIsLive(false);
     sendToPlayout({ type: 'stop' }, playoutWindowRef.current);
   }, []);
@@ -1984,7 +1994,7 @@ export function Controller() {
                 <option value="black">Black</option>
                 <option value="transparent">Transparent</option>
               </select>
-              <button type="button" className="pgm-btn cut-btn" title="Cut program to black" onClick={() => { setProgramEocFadeActive(false); setProgramEocFadeOverlayOpacity(0); setProgramEocContentOpacity(1); setIsLive(false); sendToPlayout({ type: 'stop' }, playoutWindowRef.current); }}>✕ CLEAR</button>
+              <button type="button" className="pgm-btn cut-btn" title="Cut program to black" onClick={() => { setProgramEocFadeActive(false); setProgramEocFadeOverlayOpacity(0); setProgramEocContentOpacity(1); setProgramCueItemIdx(-1); setIsLive(false); sendToPlayout({ type: 'stop' }, playoutWindowRef.current); }}>✕ CLEAR</button>
             </div>
             <div className="t-zone-sep" />
             <div className="t-zone t-zone-take">
