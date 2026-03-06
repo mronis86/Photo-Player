@@ -10,6 +10,7 @@ const REALTIME_EVENT = 'playout';
 export type PlayoutMessage =
   | { type: 'play'; [key: string]: unknown }
   | { type: 'stop' }
+  | { type: 'preload'; url: string }
   | { type: 'fadeOut'; duration?: number; partial?: boolean; fadeTo?: 'black' | 'transparent' }
   | { type: 'fadeIn'; duration?: number }
   | { type: 'ping' }
@@ -52,6 +53,36 @@ export function sendToPlayout(message: PlayoutMessage, playoutWindow: Window | n
   if (realtimeChannelRef) {
     realtimeChannelRef.send({ type: 'broadcast', event: REALTIME_EVENT, payload: message });
   }
+}
+
+/** Result of resolving a play payload URL (for preload). */
+export type ResolvedPlayUrl = { url: string; isLocal: boolean };
+
+/**
+ * Resolve play payload URL only (no send). Used to preload so Take can send instantly.
+ * Returns null if no resolution needed (e.g. external URL) or on failure.
+ */
+export async function resolvePlayPayloadUrl(
+  payload: PlayoutPayload,
+  userId: string | null
+): Promise<ResolvedPlayUrl | null> {
+  if (userId && isCloudStoredCue(payload.src)) {
+    try {
+      const url = await getSignedUrl(userId, payload.src);
+      return { url, isLocal: false };
+    } catch {
+      return null;
+    }
+  }
+  if (isLocalCueSrc(payload.src)) {
+    try {
+      const url = await uploadTempAsset(payload.src);
+      return { url, isLocal: true };
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 /** Send a play payload to playout; resolves cloud src to signed URL, local src to temp-asset URL (same network). */

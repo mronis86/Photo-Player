@@ -233,10 +233,14 @@ export function Stage() {
       applyPlayRef.current?.(pending.p, pending.doFade, pending.doWipe, pending.doDip);
     };
 
-    const handle = (d: { type: string; duration?: number; partial?: boolean; [key: string]: unknown }) => {
+    const handle = (d: { type: string; duration?: number; partial?: boolean; url?: string; [key: string]: unknown }) => {
       if (d.type === 'connectionAccepted') {
         setConnectionAccepted(true);
         setCodeError('');
+      }
+      if (d.type === 'preload' && typeof d.url === 'string' && d.url) {
+        const img = new Image();
+        img.src = d.url;
       }
       if (d.type === 'play') {
         const p = d as PlayoutPayload;

@@ -57,8 +57,9 @@ export function joinCompanionChannelAsController(
   if (!supabase) {
     return { unsubscribe: () => {} };
   }
+  const client = supabase;
   const name = getCompanionChannelName(code);
-  const channel = supabase.channel(name);
+  const channel = client.channel(name);
   channel.on('broadcast', { event: COMPANION_EVENT_CMD }, (p: { payload: CompanionCommandPayload }) => {
     onCommand(p.payload);
   });
@@ -82,7 +83,7 @@ export function joinCompanionChannelAsController(
 
   return {
     unsubscribe: () => {
-      void supabase.removeChannel(channel);
+      void client.removeChannel(channel);
     },
   };
 }

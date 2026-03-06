@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Cue, Section, KbPoint } from '../../lib/types';
 import type { ModeOpts, CaptionStyle, EndOfCue, TransitionType, WipeDirection } from '../../lib/types';
-import { sendToPlayout, sendPlayPayload, subscribeToPlayout, joinPlayoutChannelAsController, DISCONNECT_AFTER_MS, CONNECTED_CHECK_INTERVAL_MS } from '../../lib/playoutChannel';
+import { sendToPlayout, sendPlayPayload, resolvePlayPayloadUrl, subscribeToPlayout, joinPlayoutChannelAsController, DISCONNECT_AFTER_MS, CONNECTED_CHECK_INTERVAL_MS } from '../../lib/playoutChannel';
 import { joinCompanionChannelAsController, type CompanionStatePayload, type CompanionCommandPayload } from '../../lib/companionChannel';
 import { buildPlayoutPayload } from '../../lib/buildPlayoutPayload';
 import { DEFAULT_MODE_OPTS, DEFAULT_CAPTION_STYLE } from '../../lib/types';
@@ -9,6 +9,7 @@ import { getCueHoldDuration, getCueEOC, getCueFadeIn, getCueFadeOut, getCueModeO
 import { runImageAnalysis } from '../../lib/imageAnalysis';
 import { listProjects, loadProject, saveProject, deleteProject, type ProjectRow } from '../../lib/projects';
 import { uploadCueImage, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
+import { isLocalCueSrc } from '../../lib/tempAsset';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { MonitorLayer } from './MonitorLayer';
@@ -335,6 +336,7 @@ export function Controller() {
   const [projectListOpen, setProjectListOpen] = useState(false);
   const [deleteProjectModal, setDeleteProjectModal] = useState<ProjectRow | null>(null);
   const [projectSaveError, setProjectSaveError] = useState<string | null>(null);
+  const [projectLoadingId, setProjectLoadingId] = useState<string | null>(null);
   const [timeElapsed, setTimeElapsed] = useState('0:00');
   const [timeRemain, setTimeRemain] = useState('—');
   const [programCrossfadeNextCue, setProgramCrossfadeNextCue] = useState<Cue | null>(null);
@@ -375,6 +377,8 @@ export function Controller() {
   const loopOnRef = useRef(loopOn);
   /** When set, next previewCueId change should trigger an automatic take (used by jump-to-next). */
   const takeOnNextPreviewRef = useRef(false);
+  /** Preloaded resolved URL for current preview cue so Take can send instantly (Option 1: Railway responsiveness). */
+  const preloadedUrlRef = useRef<{ cueId: string; src: string; url: string; isLocal: boolean } | null>(null);
   const cuesRef = useRef(cues);
   const sectionsRef = useRef(sections);
   const settingsRef = useRef({ selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect });
@@ -790,6 +794,36 @@ export function Controller() {
   const previewCue = previewCueId ? getCue(cues, previewCueId) : undefined;
   const programCueId = programCueItemIdx >= 0 ? flatCueIds[programCueItemIdx] : undefined;
   const programCue = programCueId ? getCue(cues, programCueId) : undefined;
+
+  // Preload preview cue URL so Take sends instantly over network (Option 1: under 1-2s delay, smooth playout)
+  useEffect(() => {
+    if (!previewCueId || !previewCue?.src || !user?.id) {
+      preloadedUrlRef.current = null;
+      return;
+    }
+    const cueId = previewCueId;
+    const src = previewCue.src;
+    // Only preload when URL needs resolution (cloud or local); resolvePlayPayloadUrl returns null for external
+    if (!isCloudStoredCue(src) && !isLocalCueSrc(src)) {
+      preloadedUrlRef.current = null;
+      return;
+    }
+    const minimalPayload = { type: 'play' as const, src };
+    let cancelled = false;
+    resolvePlayPayloadUrl(minimalPayload, user.id).then((res) => {
+      if (cancelled || previewCueId !== cueId || previewCue?.src !== src) return;
+      if (res) {
+        preloadedUrlRef.current = { cueId, src, url: res.url, isLocal: res.isLocal };
+        // Tell playout to load this URL now so it’s cached by Take time (fixes local files slow on Railway)
+        sendToPlayout({ type: 'preload', url: res.url }, playoutWindowRef.current);
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (preloadedUrlRef.current?.cueId === cueId) preloadedUrlRef.current = null;
+    };
+  }, [previewCueId, previewCue?.id, previewCue?.src, user?.id]);
+
   const programTotalDur = programCue ? getCueHoldDuration(programCue, holdDuration) : holdDuration;
   const pendingTake = pendingProgramTakeRef.current;
   const effectiveProgramItemIdx = programCrossfadeNextCue && pendingTake != null ? pendingTake.itemIdx : programCueItemIdx;
@@ -1107,7 +1141,16 @@ export function Controller() {
       aspect,
       ...(useSmoothTransition ? { overrideTransitionType: transType, overrideTransDuration: transDur } : {}),
     });
-    void sendPlayPayload(payload, playoutWindowRef.current, user?.id ?? null);
+    const preloaded = preloadedUrlRef.current;
+    if (preloaded?.cueId === previewCueId && preloaded?.src === payload.src) {
+      const resolved = preloaded.isLocal
+        ? { ...payload, src: preloaded.url, resolvedSrc: preloaded.url }
+        : { ...payload, resolvedSrc: preloaded.url };
+      sendToPlayout(resolved, playoutWindowRef.current);
+      preloadedUrlRef.current = null;
+    } else {
+      void sendPlayPayload(payload, playoutWindowRef.current, user?.id ?? null);
+    }
   }, [previewCueId, previewCue, cues, flatCueIds, selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect, user?.id, isLive, programCue]);
 
   // When jump-to-next sets preview then this flag, take the new preview to program
@@ -1442,6 +1485,7 @@ export function Controller() {
   const handleLoadProject = async (id: string) => {
     setProjectListOpen(false);
     setProjectSaveError(null);
+    setProjectLoadingId(id);
     try {
       const payload = await loadProject(id);
       setCues(payload.cues);
@@ -1454,6 +1498,8 @@ export function Controller() {
       setPreviewCueId(firstId);
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Load failed');
+    } finally {
+      setProjectLoadingId(null);
     }
   };
 
@@ -1482,6 +1528,19 @@ export function Controller() {
 
   return (
     <>
+      {projectLoadingId != null && (
+        <div
+          className="project-loading-overlay"
+          role="status"
+          aria-live="polite"
+          aria-label="Loading project"
+        >
+          <div className="project-loading-content">
+            <div className="analysis-spinner" style={{ width: 32, height: 32, borderWidth: 3 }} />
+            <span>Loading project…</span>
+          </div>
+        </div>
+      )}
       <header>
         <div className="logo">FRAMEFLOW</div>
         <div className="logo-sub">Image Motion Playback</div>
