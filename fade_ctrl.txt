@@ -1,8 +1,7 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+﻿import { useState, useRef, useCallback, useEffect } from 'react';
 import type { Cue, Section, KbPoint } from '../../lib/types';
 import type { ModeOpts, CaptionStyle, EndOfCue, TransitionType, WipeDirection } from '../../lib/types';
 import { sendToPlayout, sendPlayPayload, subscribeToPlayout, joinPlayoutChannelAsController, DISCONNECT_AFTER_MS, CONNECTED_CHECK_INTERVAL_MS } from '../../lib/playoutChannel';
-import { joinCompanionChannelAsController, type CompanionStatePayload, type CompanionCommandPayload } from '../../lib/companionChannel';
 import { buildPlayoutPayload } from '../../lib/buildPlayoutPayload';
 import { DEFAULT_MODE_OPTS, DEFAULT_CAPTION_STYLE } from '../../lib/types';
 import { getCueHoldDuration, getCueEOC, getCueFadeIn, getCueFadeOut, getCueModeOpts, getCueCaptionStyle, kbPointToXYZ, xyzToKbPoint, getCueStartXYZ, getCueEndXYZ, getKBScaleVar, getWipeClipPath, getCustomKBTransformFromXYZ } from '../../lib/controllerHelpers';
@@ -10,7 +9,6 @@ import { runImageAnalysis } from '../../lib/imageAnalysis';
 import { listProjects, loadProject, saveProject, deleteProject, type ProjectRow } from '../../lib/projects';
 import { uploadCueImage, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
 import { useAuth } from '../../contexts/AuthContext';
-import { supabase } from '../../lib/supabase';
 import { MonitorLayer } from './MonitorLayer';
 import { MediaImg } from './MediaImg';
 
@@ -46,14 +44,14 @@ const WIPE_DIRECTIONS_ALL: WipeDirection[] = [
 ];
 function wipeDirectionLabel(d: WipeDirection): string {
   switch (d) {
-    case 'left': return '← Left';
-    case 'right': return '→ Right';
-    case 'up': return '↑ Up';
-    case 'down': return '↓ Down';
-    case 'diagonal-tl-br': return '↘ TL→BR';
-    case 'diagonal-br-tl': return '↖ BR→TL';
-    case 'diagonal-tr-bl': return '↙ TR→BL';
-    case 'diagonal-bl-tr': return '↗ BL→TR';
+    case 'left': return 'ΓåÉ Left';
+    case 'right': return 'ΓåÆ Right';
+    case 'up': return 'Γåæ Up';
+    case 'down': return 'Γåô Down';
+    case 'diagonal-tl-br': return 'Γåÿ TLΓåÆBR';
+    case 'diagonal-br-tl': return 'Γåû BRΓåÆTL';
+    case 'diagonal-tr-bl': return 'ΓåÖ TRΓåÆBL';
+    case 'diagonal-bl-tr': return 'Γåù BLΓåÆTR';
     default: return String(d);
   }
 }
@@ -145,7 +143,7 @@ interface ThumbnailOverlayProps {
   /** When set, show the image cropped to this frame (motion within crop box). When null, show full image with both boxes. */
   editingFrame: 'start' | 'end' | null;
 }
-/** Fixed "frame" in editorial: centered, fixed size — zoom/pan happens inside it so the frame never moves. */
+/** Fixed "frame" in editorial: centered, fixed size ΓÇö zoom/pan happens inside it so the frame never moves. */
 const EDITORIAL_FRAME_INSET_PCT = 10;
 function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale, editingFrame }: ThumbnailOverlayProps) {
   function toRect(xyz: { cx: number; cy: number; z: number }) {
@@ -329,14 +327,12 @@ export function Controller() {
   const [analyzingCueId, setAnalyzingCueId] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [currentProjectName, setCurrentProjectName] = useState('');
-  /** Permanent Companion code for the current project (from DB). When set, Companion uses this instead of session connectionCode. */
-  const [currentProjectCompanionCode, setCurrentProjectCompanionCode] = useState<string | null>(null);
   const [projectList, setProjectList] = useState<ProjectRow[]>([]);
   const [projectListOpen, setProjectListOpen] = useState(false);
   const [deleteProjectModal, setDeleteProjectModal] = useState<ProjectRow | null>(null);
   const [projectSaveError, setProjectSaveError] = useState<string | null>(null);
   const [timeElapsed, setTimeElapsed] = useState('0:00');
-  const [timeRemain, setTimeRemain] = useState('—');
+  const [timeRemain, setTimeRemain] = useState('ΓÇö');
   const [programCrossfadeNextCue, setProgramCrossfadeNextCue] = useState<Cue | null>(null);
   const [programOutgoingCue, setProgramOutgoingCue] = useState<Cue | null>(null);
   const [programCrossfadeDuration, setProgramCrossfadeDuration] = useState(0.8);
@@ -345,7 +341,7 @@ export function Controller() {
   const programCrossfadeDurationRef = useRef(0.8);
   /** 'fade' | 'wipe' | 'dip' when we're doing a smooth transition; null for cut. */
   const [programTransitionKind, setProgramTransitionKind] = useState<'fade' | 'wipe' | 'dip' | null>(null);
-  /** Wipe: 100 = incoming fully clipped (hidden), 0 = fully revealed. Animated 100→0 over duration. */
+  /** Wipe: 100 = incoming fully clipped (hidden), 0 = fully revealed. Animated 100ΓåÆ0 over duration. */
   const [programWipeRevealPct, setProgramWipeRevealPct] = useState(100);
   /** EOC fade on program monitor: when true we're fading program view to black or transparent. */
   const [programEocFadeActive, setProgramEocFadeActive] = useState(false);
@@ -358,14 +354,6 @@ export function Controller() {
   const playoutWindowRef = useRef<Window | null>(null);
   const connectionCodeRef = useRef<string>('');
   const playoutLastSeenRef = useRef<number>(0);
-  const companionSendStateRef = useRef<((s: CompanionStatePayload) => void) | null>(null);
-  const companionStateRef = useRef<CompanionStatePayload | null>(null);
-  const companionTakeRef = useRef<(() => void) | null>(null);
-  const companionNextRef = useRef<(() => void) | null>(null);
-  const companionPrevRef = useRef<(() => void) | null>(null);
-  const companionGoToCueRef = useRef<((index: number) => void) | null>(null);
-  const companionClearRef = useRef<(() => void) | null>(null);
-  const companionFadeRef = useRef<((to: 'black' | 'transparent') => void) | null>(null);
   const dualMonitorsRef = useRef<HTMLDivElement | null>(null);
   const pvwSplitRef = useRef(pvwSplit);
   const playStartTimeRef = useRef(0);
@@ -478,10 +466,6 @@ export function Controller() {
         sendToPlayout({ type: 'connectionAccepted' }, playoutWindowRef.current);
       }
       if (msg.type === 'heartbeat') playoutLastSeenRef.current = Date.now();
-      if (msg.type === 'disconnect') {
-        playoutWindowRef.current = null;
-        setPlayoutConnected(false);
-      }
     };
     return subscribeToPlayout(onMsg);
   }, []);
@@ -494,233 +478,18 @@ export function Controller() {
         sendToPlayout({ type: 'connectionAccepted' }, playoutWindowRef.current);
       }
       if (msg.type === 'heartbeat') playoutLastSeenRef.current = Date.now();
-      if (msg.type === 'disconnect') {
-        playoutWindowRef.current = null;
-        setPlayoutConnected(false);
-      }
     });
   }, [connectionCode]);
 
   useEffect(() => {
     if (!playoutConnected) return;
     const id = setInterval(() => {
-      // If we opened the playout in this tab and the user closed that window, detect it immediately
-      if (playoutWindowRef.current?.closed) {
-        playoutWindowRef.current = null;
-        setPlayoutConnected(false);
-        return;
-      }
-      // No heartbeat for too long (e.g. stage tab closed, or Realtime playout disconnected)
       if (Date.now() - playoutLastSeenRef.current > DISCONNECT_AFTER_MS) {
         setPlayoutConnected(false);
       }
     }, CONNECTED_CHECK_INTERVAL_MS);
     return () => clearInterval(id);
   }, [playoutConnected]);
-
-  // Companion code: use project's permanent code when a project is open, otherwise session connectionCode
-  const companionCodeForSession = (currentProjectCompanionCode ?? connectionCode).trim().toUpperCase();
-
-  // Companion (Bitfocus): subscribe to commands and broadcast state; use project code when project is open
-  useEffect(() => {
-    const code = companionCodeForSession;
-    if (!code) return;
-    const { unsubscribe } = joinCompanionChannelAsController(
-      code,
-      (cmd: CompanionCommandPayload) => {
-        const cmdStr = cmd.type === 'cue' ? `cue ${cmd.cueIndex}` : cmd.type === 'fade' ? `fade ${cmd.fadeTo}` : cmd.type;
-        console.log('[Companion] Command received:', cmdStr);
-        if (cmd.type === 'take') companionTakeRef.current?.();
-        if (cmd.type === 'next') companionNextRef.current?.();
-        if (cmd.type === 'prev') companionPrevRef.current?.();
-        if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
-        if (cmd.type === 'clear') companionClearRef.current?.();
-        if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
-      },
-      {
-        onRequestState: () => {
-          const payload = companionStateRef.current;
-          const send = companionSendStateRef.current;
-          if (payload && send) {
-            send(payload);
-            console.log('[Companion] Sent state (requested by API), cues:', payload.cues?.length ?? 0);
-          }
-        },
-        onSubscribed: (sendStateFn) => {
-          companionSendStateRef.current = sendStateFn;
-          // Defer first send to next event loop so Realtime uses WebSocket, not REST fallback
-          const sendFirst = () => {
-            const payload = companionStateRef.current;
-            if (payload && sendStateFn) {
-              sendStateFn(payload);
-              console.log('[Companion] Channel SUBSCRIBED (WebSocket), sent state, cues:', payload.cues?.length ?? 0);
-            }
-          };
-          setTimeout(sendFirst, 0);
-        },
-      }
-    );
-    console.log('[Companion] Channel joining, code:', code, currentProjectCompanionCode ? '(project)' : '');
-    return () => {
-      companionSendStateRef.current = null;
-      unsubscribe();
-      console.log('[Companion] Channel left');
-    };
-  }, [companionCodeForSession, currentProjectCompanionCode]);
-
-  // Companion API URL (Railway): when set, controller POSTs state over HTTP. Env is read at dev-server start; localStorage override works without restart.
-  const companionApiUrl = (() => {
-    const fromEnv = import.meta.env?.VITE_COMPANION_API_URL;
-    const fromStorage = typeof localStorage !== 'undefined' ? localStorage.getItem('companionApiUrl') : null;
-    const raw = (typeof fromEnv === 'string' && fromEnv.trim() ? fromEnv : fromStorage || '').trim();
-    if (!raw) return '';
-    return raw.replace(/\/+$/, '');
-  })();
-
-  // One-time log so you can see whether HTTP or Realtime is used
-  const companionApiUrlLoggedRef = useRef(false);
-  if (!companionApiUrlLoggedRef.current && companionCodeForSession) {
-    companionApiUrlLoggedRef.current = true;
-    if (companionApiUrl) {
-      console.log('[Companion] Using Railway HTTP:', companionApiUrl, '– state will POST to API (cues should appear in module)');
-    } else {
-      console.warn(
-        '[Companion] Using Realtime only – Railway will show hasState=false. To use HTTP: set VITE_COMPANION_API_URL in .env and restart dev server, OR in the console run: localStorage.setItem("companionApiUrl","https://photo-player-production.up.railway.app"); location.reload();'
-      );
-    }
-  }
-
-  // Send to Companion only when state actually changes. Prefer HTTP POST to Railway when VITE_COMPANION_API_URL is set.
-  const companionLastSentRef = useRef<{ liveIndex: number; nextIndex: number; isLive: boolean; playoutConnected: boolean; cuesLength: number; cueIdsKey: string; arrowKey: string } | null>(null);
-
-  useEffect(() => {
-    const nextIndex = previewCueId != null ? flatCueIds.indexOf(previewCueId) : -1;
-    const nextIdx = nextIndex >= 0 ? nextIndex : 0;
-    const cuesSummary = flatCueIds.map((id, index) => {
-      const cue = cues.find((c) => c.id === id);
-      const baseName = cue?.displayName ?? cue?.captionTitle ?? cue?.analysis?.caption ?? cue?.name ?? '';
-      const autoAtEnd = cue?.jumpToNext === true;
-      const labelWithArrow = baseName + (autoAtEnd ? ' →' : '');
-      return {
-        index,
-        id,
-        name: labelWithArrow,
-        displayName: labelWithArrow,
-        captionTitle: cue?.captionTitle ?? cue?.analysis?.caption,
-        eoc: getCueEOC(cue, endOfCueBehavior),
-        buttonLabel: labelWithArrow,
-      };
-    });
-    const payload: CompanionStatePayload = {
-      liveIndex: programCueItemIdx,
-      nextIndex: nextIdx,
-      isLive,
-      playoutConnected,
-      cues: cuesSummary,
-    };
-    companionStateRef.current = payload;
-
-    const cueIdsKey = flatCueIds.join(',');
-    const arrowKey = cuesSummary.map((c) => (c.name?.includes('→') ? '1' : '0')).join(',');
-    const prev = companionLastSentRef.current;
-    const changed =
-      !prev ||
-      prev.liveIndex !== programCueItemIdx ||
-      prev.nextIndex !== nextIdx ||
-      prev.isLive !== isLive ||
-      prev.playoutConnected !== playoutConnected ||
-      prev.cuesLength !== cuesSummary.length ||
-      prev.cueIdsKey !== cueIdsKey ||
-      prev.arrowKey !== arrowKey;
-
-    if (!changed) return;
-
-    companionLastSentRef.current = {
-      liveIndex: programCueItemIdx,
-      nextIndex: nextIdx,
-      isLive,
-      playoutConnected,
-      cuesLength: cuesSummary.length,
-      cueIdsKey,
-      arrowKey,
-    };
-
-    const code = companionCodeForSession;
-    if (!code) return;
-
-    // Always persist to Supabase table so Railway/Companion can read via GET /state.
-    if (supabase) {
-      void supabase
-        .from('companion_state')
-        .upsert(
-          { connection_code: code, state: payload, updated_at: new Date().toISOString() },
-          { onConflict: 'connection_code' }
-        )
-        .then(
-          ({ error }) => {
-            if (error) {
-              console.error('[Companion] companion_state upsert failed –', error.message, '| Code:', code, '| Cues:', cuesSummary.length, '| Check RLS: allow authenticated to insert/update (migration 008).');
-            } else {
-              console.log('[Companion] companion_state saved, code:', code, 'cues:', cuesSummary.length);
-            }
-          },
-          (err) => console.error('[Companion] companion_state upsert error', err)
-        );
-    }
-
-    if (companionApiUrl) {
-      fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      })
-        .then((r) => {
-          if (r.ok) console.log('[Companion] POST /state succeeded, cues:', cuesSummary.length);
-          else r.text().then((t) => console.warn('[Companion] POST /state failed', r.status, r.statusText, t));
-        })
-        .catch((err) => console.warn('[Companion] POST /state failed (network/CORS?)', err.message));
-      console.log('[Companion] State sent (HTTP), cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIdx);
-    } else {
-      const send = companionSendStateRef.current;
-      if (send) {
-        send(payload);
-        console.log('[Companion] State sent (Realtime), cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIdx);
-      }
-    }
-  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected, companionCodeForSession, companionApiUrl, endOfCueBehavior]);
-
-  // Slow heartbeat: keep Supabase table and (if URL set) Railway in sync.
-  useEffect(() => {
-    if (!companionCodeForSession) return;
-    const code = companionCodeForSession;
-    const intervalMs = 10000;
-    const id = setInterval(() => {
-      const payload = companionStateRef.current;
-      if (!payload) return;
-      if (supabase) {
-        void supabase
-          .from('companion_state')
-          .upsert(
-            { connection_code: code, state: payload, updated_at: new Date().toISOString() },
-            { onConflict: 'connection_code' }
-          )
-          .then(({ error }) => {
-            if (error) console.warn('[Companion] heartbeat companion_state failed', error.message);
-          }, () => {});
-      }
-      if (companionApiUrl) {
-        fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }).catch(() => {});
-      } else {
-        const send = companionSendStateRef.current;
-        if (send) send(payload);
-      }
-    }, intervalMs);
-    return () => clearInterval(id);
-  }, [companionCodeForSession, companionApiUrl]);
 
   useEffect(() => {
     try {
@@ -1030,9 +799,7 @@ export function Controller() {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-    // Omit flatCueIds from deps: it's recreated every render (flatMap), and the tick calls setProgressPct every frame,
-    // which would re-run this effect every frame and restart the timer. We read ids via flatCueIdsRef.current in the tick.
-  }, [isLive, programCueItemIdx, holdDuration, endOfCueBehavior, fadeOutDur, user?.id, fadeInDur]);
+  }, [isLive, programCueItemIdx, holdDuration, endOfCueBehavior, fadeOutDur, flatCueIds, user?.id, fadeInDur]);
 
   const handlePvwPlay = () => {
     if (!previewCue) return;
@@ -1130,65 +897,6 @@ export function Controller() {
     }
     setPreviewCueId(flatCueIds[nextIdx]);
   }, [previewCueId, flatCueIds]);
-
-  const handleGoToCueIndex = useCallback((index: number) => {
-    if (index < 0 || index >= flatCueIds.length) return;
-    const cueId = flatCueIds[index];
-    const cue = cues.find((c) => c.id === cueId);
-    if (!cue) return;
-    setProgramCueItemIdx(index);
-    setPreviewCueId(cueId);
-    setProgramCrossfadeNextCue(null);
-    setProgramOutgoingCue(null);
-    setProgramTransitionKind(null);
-    setIsLive(true);
-    const payload = buildPlayoutPayload({
-      cue,
-      selectedMode: selectedMode,
-      captionStyle,
-      holdDuration,
-      transitionType: 'cut',
-      transDuration: transDuration,
-      dipColor,
-      fadeInDur,
-      fadeOutDur,
-      endOfCueBehavior,
-      fadeTo,
-      zoomScale,
-      motionSpeed,
-      kbDirection,
-      modeOpts,
-      aspect,
-    });
-    void sendPlayPayload(payload, playoutWindowRef.current, user?.id ?? null);
-  }, [flatCueIds, cues, selectedMode, captionStyle, holdDuration, transDuration, dipColor, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect, user?.id]);
-
-  const handleCompanionClear = useCallback(() => {
-    setProgramEocFadeActive(false);
-    setProgramEocFadeOverlayOpacity(0);
-    setProgramEocContentOpacity(1);
-    setProgramCueItemIdx(-1);
-    setIsLive(false);
-    sendToPlayout({ type: 'stop' }, playoutWindowRef.current);
-  }, []);
-
-  const handleCompanionFade = useCallback((to: 'black' | 'transparent') => {
-    const dur = fadeOutDur || 1;
-    sendToPlayout({ type: 'fadeOut', duration: dur, fadeTo: to }, playoutWindowRef.current);
-    setTimeout(() => {
-      setIsLive(false);
-      sendToPlayout({ type: 'stop' }, playoutWindowRef.current);
-    }, dur * 1000);
-  }, [fadeOutDur]);
-
-  useEffect(() => {
-    companionTakeRef.current = handleTakeToProgram;
-    companionNextRef.current = () => handleSelectPrevNext(1);
-    companionPrevRef.current = () => handleSelectPrevNext(-1);
-    companionGoToCueRef.current = handleGoToCueIndex;
-    companionClearRef.current = handleCompanionClear;
-    companionFadeRef.current = handleCompanionFade;
-  }, [handleTakeToProgram, handleSelectPrevNext, handleGoToCueIndex, handleCompanionClear, handleCompanionFade]);
 
   const moveCueInSection = useCallback((sectionId: string, cueId: string, direction: -1 | 1) => {
     setSections((prev) => prev.map((s) => {
@@ -1403,7 +1111,6 @@ export function Controller() {
   const handleCreateNewProject = () => {
     setCurrentProjectId(null);
     setCurrentProjectName(newProjectName.trim() || 'Untitled');
-    setCurrentProjectCompanionCode(null);
     setStoreImagesMode(newProjectStoreMode);
     setAnalyzeOnImport(newProjectAnalyzeOnImport);
     setCues([]);
@@ -1417,9 +1124,8 @@ export function Controller() {
   const handleSaveProject = async () => {
     setProjectSaveError(null);
     try {
-      const { id, companionCode } = await saveProject(currentProjectId, currentProjectName, { cues, sections });
+      const id = await saveProject(currentProjectId, currentProjectName, { cues, sections });
       setCurrentProjectId(id);
-      if (companionCode) setCurrentProjectCompanionCode(companionCode);
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Save failed');
     }
@@ -1448,7 +1154,6 @@ export function Controller() {
       setSections(payload.sections);
       setCurrentProjectId(id);
       setCurrentProjectName(projectList.find((p) => p.id === id)?.name ?? '');
-      setCurrentProjectCompanionCode(payload.companionCode || null);
       setProgramCueItemIdx(-1);
       const firstId = getFlatCueIds(payload.sections)[0] ?? null;
       setPreviewCueId(firstId);
@@ -1467,7 +1172,6 @@ export function Controller() {
       if (currentProjectId === project.id) {
         setCurrentProjectId(null);
         setCurrentProjectName('');
-        setCurrentProjectCompanionCode(null);
       }
       setDeleteProjectModal(null);
     } catch (e) {
@@ -1476,15 +1180,15 @@ export function Controller() {
   };
 
   const totalItems = flatCueIds.length;
-  const programCueNum = programCueItemIdx >= 0 ? String(programCueItemIdx + 1).padStart(2, '0') : '—';
+  const programCueNum = programCueItemIdx >= 0 ? String(programCueItemIdx + 1).padStart(2, '0') : 'ΓÇö';
   const previewCueItemIdx = previewCueId != null ? flatCueIds.indexOf(previewCueId) : -1;
-  const nextCueNum = previewCueItemIdx >= 0 ? String(previewCueItemIdx + 1).padStart(2, '0') : '—';
+  const nextCueNum = previewCueItemIdx >= 0 ? String(previewCueItemIdx + 1).padStart(2, '0') : 'ΓÇö';
 
   return (
     <>
       <header>
         <div className="logo">FRAMEFLOW</div>
-        <div className="logo-sub">Image Motion Playback</div>
+        <div className="logo-sub">VISUAL PLAYBACK</div>
         <div className="divider" />
         <div className={`badge ${isLive ? 'badge-live' : 'badge-idle'}`}>
           <div className={`dot ${isLive ? 'dot-red' : 'dot-grey'}`} />
@@ -1499,11 +1203,11 @@ export function Controller() {
               letterSpacing: 1,
             }}
           >
-            {playoutConnected ? '● PLAYOUT CONNECTED' : `Code: ${connectionCode} — enter on playout`}
+            {playoutConnected ? 'ΓùÅ PLAYOUT CONNECTED' : `Code: ${connectionCode} ΓÇö enter on playout`}
           </span>
           <div className="divider" />
           <button type="button" className="btn-playout" onClick={handleOpenPlayout}>
-            ⬛ OPEN PLAYOUT
+            Γ¼¢ OPEN PLAYOUT
           </button>
           <div className="divider" />
           <span className="header-user-badge" title={user?.email ?? ''}>
@@ -1541,16 +1245,11 @@ export function Controller() {
                 onClick={() => setSettingsModalOpen(true)}
                 title="Settings"
               >
-                ⚙ Settings
+                ΓÜÖ Settings
               </button>
             </div>
             <div className="current-project-label" title="Active project">
               Current: {currentProjectName || 'No project'}
-              {currentProjectCompanionCode && (
-                <span style={{ display: 'block', fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>
-                  Companion: {currentProjectCompanionCode}
-                </span>
-              )}
             </div>
             {projectListOpen && projectList.length > 0 && (
               <ul className="project-list">
@@ -1566,7 +1265,7 @@ export function Controller() {
                       title="Delete project"
                       aria-label={`Delete ${p.name}`}
                     >
-                      ✕
+                      Γ£ò
                     </button>
                   </li>
                 ))}
@@ -1621,14 +1320,11 @@ export function Controller() {
                 style={{ display: 'none' }}
                 onChange={(e) => handleFileInput(e)}
               />
-              <div className="upload-zone-inner">
-                <span className="upload-zone-icon" aria-hidden="true">
-              <svg viewBox="0 0 32 32" width="18" height="18" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-                <path fillRule="evenodd" d="m19.120106 0c1.8257724 0 3.5522076.83131873 4.6906771 2.25867017l4.8798939 6.11814718c.847677 1.06277155 1.309323 2.38190365 1.309323 3.74132985v13.8818528c0 3.3137085-2.6862915 6-6 6h-16c-3.3137085 0-6-2.6862915-6-6v-20c0-3.3137085 2.6862915-6 6-6zm.879894 21.4731406h-8c-.5522847 0-1 .4477153-1 1 0 .5522848.4477153 1 1 1h8c.5522847 0 1-.4477152 1-1 0-.5522847-.4477153-1-1-1zm-3.9158423-12.4731406h-.1683154c-.2359046.01386477-.4678334.11091814-.6480753.29116012l-4.2426407 4.24264068c-.3905243.3905243-.3905243 1.0236893 0 1.4142136s1.0236892.3905243 1.4142135 0l2.5614272-2.5598738-.000767 6.085c0 .5522848.4477153 1 1 1s1-.4477152 1-1l.000767-6.085 2.5598932 2.5598738c.3905243.3905243 1.0236892.3905243 1.4142135 0s.3905243-1.0236893 0-1.4142136l-4.2426407-4.24264068c-.1802419-.18024198-.4121707-.27729535-.6480753-.29116012z" />
-              </svg>
-            </span>
-                <p><strong>Drop images here</strong> or click to browse</p>
-              </div>
+              <div style={{ fontSize: 16, marginBottom: 3 }}>Γ¼å</div>
+              <p>
+                <strong>Drop images here</strong> or click to browse
+              </p>
+              <p>Drop or click to add to cue list</p>
             </div>
             {(user && (storeImagesMode === 'cloud' || storeImagesMode === 'hybrid')) && (
               <button
@@ -1637,7 +1333,7 @@ export function Controller() {
                 style={{ marginTop: 8, width: '100%' }}
                 onClick={handleOpenCloudBrowser}
               >
-                ☁ From cloud
+                Γÿü From cloud
               </button>
             )}
           </div>
@@ -1656,7 +1352,7 @@ export function Controller() {
                   Loop
                 </button>
                 <span className="cue-counter">
-                  LIVE <b>{isLive ? programCueNum : '—'}</b> · NEXT <b>{nextCueNum}</b> / <b>{totalItems}</b>
+                  LIVE <b>{isLive ? programCueNum : 'ΓÇö'}</b> ┬╖ NEXT <b>{nextCueNum}</b> / <b>{totalItems}</b>
                 </span>
               </div>
             </div>
@@ -1681,15 +1377,15 @@ export function Controller() {
                           onClick={(e) => { e.stopPropagation(); toggleSectionCollapsed(sec.id); }}
                           title={sec.collapsed ? 'Expand' : 'Collapse'}
                         >
-                          {sec.collapsed ? '▶' : '▼'}
+                          {sec.collapsed ? 'Γû╢' : 'Γû╝'}
                         </span>
                         <span className="section-name">{sec.name}</span>
                         <span className="section-count">{sec.cueIds.length}</span>
                         <div className="cue-actions" onClick={(e) => e.stopPropagation()}>
-                          <button type="button" className="cue-act-btn" title="Move section up" onClick={() => moveSection(secIdx, -1)} disabled={secIdx === 0}>↑</button>
-                          <button type="button" className="cue-act-btn" title="Move section down" onClick={() => moveSection(secIdx, 1)} disabled={secIdx === sections.length - 1}>↓</button>
+                          <button type="button" className="cue-act-btn" title="Move section up" onClick={() => moveSection(secIdx, -1)} disabled={secIdx === 0}>Γåæ</button>
+                          <button type="button" className="cue-act-btn" title="Move section down" onClick={() => moveSection(secIdx, 1)} disabled={secIdx === sections.length - 1}>Γåô</button>
                           {sections.length > 1 && (
-                            <button type="button" className="cue-act-btn del" title="Remove section" onClick={() => removeSection(sec.id)}>✕</button>
+                            <button type="button" className="cue-act-btn del" title="Remove section" onClick={() => removeSection(sec.id)}>Γ£ò</button>
                           )}
                         </div>
                       </li>
@@ -1709,8 +1405,8 @@ export function Controller() {
                               >
                                 <span className="cue-num">{String(idx + 1).padStart(2, '0')}</span>
                                 <div className="cue-reorder">
-                                  <button type="button" className="cue-act-btn" title="Move up" onClick={(e) => { e.stopPropagation(); moveCueInSection(sec.id, cue.id, -1); }} disabled={localIdx === 0}>↑</button>
-                                  <button type="button" className="cue-act-btn" title="Move down" onClick={(e) => { e.stopPropagation(); moveCueInSection(sec.id, cue.id, 1); }} disabled={localIdx === sec.cueIds.length - 1}>↓</button>
+                                  <button type="button" className="cue-act-btn" title="Move up" onClick={(e) => { e.stopPropagation(); moveCueInSection(sec.id, cue.id, -1); }} disabled={localIdx === 0}>Γåæ</button>
+                                  <button type="button" className="cue-act-btn" title="Move down" onClick={(e) => { e.stopPropagation(); moveCueInSection(sec.id, cue.id, 1); }} disabled={localIdx === sec.cueIds.length - 1}>Γåô</button>
                                 </div>
                                 {analyzingCueId === cue.id && <span className="cue-item-spinner" aria-hidden />}
                                 <div className="cue-thumb-wrap">
@@ -1725,21 +1421,21 @@ export function Controller() {
                                     <span className={`eoc-badge ${getCueEOC(cue, endOfCueBehavior) === 'hold' ? 'eoc-hold' : getCueEOC(cue, endOfCueBehavior) === 'fade' ? 'eoc-fade' : 'eoc-clear'}`}>
                                       {getCueEOC(cue, endOfCueBehavior) === 'hold' ? 'HOLD' : getCueEOC(cue, endOfCueBehavior) === 'fade' ? 'FADE OUT' : 'CLEAR'}
                                     </span>
-                                    {cue.jumpToNext && <span className="cue-meta-icon cue-jump-icon" title="Jump to next at end">⏭</span>}
-                                    {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud">☁</span>}
+                                    {cue.jumpToNext && <span className="cue-meta-icon cue-jump-icon" title="Jump to next at end">ΓÅ¡</span>}
+                                    {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud">Γÿü</span>}
                                   </div>
                                 </div>
                                 <div className="cue-actions">
-                                  <button type="button" className={`cue-act-btn ${cue.jumpToNext ? 'on-b' : ''}`} onClick={(e) => { e.stopPropagation(); setCues((prev) => prev.map((c) => c.id === cue.id ? { ...c, jumpToNext: !c.jumpToNext } : c)); }} title="At end: auto load next to preview and take">⏭</button>
-                                  <button type="button" className="cue-act-btn cue-act-rename" onClick={(e) => { e.stopPropagation(); setRenameCueModal(cue); }} title="Custom name in cue list">⚙</button>
-                                  <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); setDeleteCueModal({ cue }); }}>✕</button>
+                                  <button type="button" className={`cue-act-btn ${cue.jumpToNext ? 'on-b' : ''}`} onClick={(e) => { e.stopPropagation(); setCues((prev) => prev.map((c) => c.id === cue.id ? { ...c, jumpToNext: !c.jumpToNext } : c)); }} title="At end: auto load next to preview and take">ΓÅ¡</button>
+                                  <button type="button" className="cue-act-btn cue-act-rename" onClick={(e) => { e.stopPropagation(); setRenameCueModal(cue); }} title="Custom name in cue list">ΓÜÖ</button>
+                                  <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); setDeleteCueModal({ cue }); }}>Γ£ò</button>
                                 </div>
                               </li>
                             );
                           })}
                           <div className="section-add-row" onClick={() => document.getElementById(`add-${sec.id}`)?.click()}>
                             <input type="file" id={`add-${sec.id}`} accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => handleFileInput(e, sec.id)} />
-                            <span>＋ add to this section</span>
+                            <span>∩╝ï add to this section</span>
                           </div>
                         </>
                       )}
@@ -1768,7 +1464,7 @@ export function Controller() {
               <div className="monitor-header">
                 <span className="monitor-label">PREVIEW</span>
                 <span style={{ fontFamily: "'DM Mono'", fontSize: 8, color: 'var(--text2)', marginLeft: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                  {previewCueId ? cues.find((c) => c.id === previewCueId)?.captionTitle || cues.find((c) => c.id === previewCueId)?.name || '—' : '—'}
+                  {previewCueId ? cues.find((c) => c.id === previewCueId)?.captionTitle || cues.find((c) => c.id === previewCueId)?.name || 'ΓÇö' : 'ΓÇö'}
                 </span>
                 <button
                   type="button"
@@ -1777,13 +1473,13 @@ export function Controller() {
                   onClick={handlePvwPlay}
                   disabled={!previewCue}
                 >
-                  {pvwPlaying ? '■ STOP' : '▶ PLAY'}
+                  {pvwPlaying ? 'Γûá STOP' : 'Γû╢ PLAY'}
                 </button>
               </div>
               <div className="monitor-stage preview-stage">
                 <div className="preview-wrap pvw-wrap" data-asp="16:9">
                   <div className="preview-placeholder" style={{ display: previewCueId ? 'none' : 'flex' }}>
-                    <div className="ph-icon">◫</div>
+                    <div className="ph-icon">Γù½</div>
                     <div className="ph-txt">PREVIEW</div>
                   </div>
                   {previewCue && (
@@ -1812,9 +1508,9 @@ export function Controller() {
 
             <div className="monitor-col program-col">
               <div className="monitor-header">
-                <span className="monitor-label pgm">● PROGRAM</span>
+                <span className="monitor-label pgm">ΓùÅ PROGRAM</span>
                 <span style={{ fontFamily: "'DM Mono'", fontSize: 8, color: 'var(--text2)', marginLeft: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                  {programCue ? (programCue.captionTitle || programCue.name) : '—'}
+                  {programCue ? (programCue.captionTitle || programCue.name) : 'ΓÇö'}
                 </span>
                 {isLive && programCue && (
                   <span className="monitor-trans-badge" title="Transition">
@@ -1825,7 +1521,7 @@ export function Controller() {
               <div className="monitor-stage program-stage">
                 <div className="preview-wrap pgm-wrap" data-asp="16:9">
                   <div className="preview-placeholder" style={{ display: isLive && programCue ? 'none' : 'flex' }}>
-                    <div className="ph-icon">◫</div>
+                    <div className="ph-icon">Γù½</div>
                     <div className="ph-txt">AWAITING CUE</div>
                   </div>
                   {/* Program content: wrap in div for EOC transparent fade */}
@@ -1930,7 +1626,7 @@ export function Controller() {
                     />
                   )}
                   <div className="monitor-overlay-label pgm-label">PGM</div>
-                  <div className={`playout-badge ${isLive ? 'vis' : ''}`}>● PLAYOUT</div>
+                  <div className={`playout-badge ${isLive ? 'vis' : ''}`}>ΓùÅ PLAYOUT</div>
                 </div>
               </div>
             </div>
@@ -1939,14 +1635,14 @@ export function Controller() {
 
           <div className="transport">
             <div className="t-zone t-zone-nav">
-              <button type="button" className="nav-btn" title="Select previous as NEXT" onClick={() => handleSelectPrevNext(-1)}>⏮</button>
-              <button type="button" className="nav-btn" title="Select next as NEXT" onClick={() => handleSelectPrevNext(1)}>⏭</button>
+              <button type="button" className="nav-btn" title="Select previous as NEXT" onClick={() => handleSelectPrevNext(-1)}>ΓÅ«</button>
+              <button type="button" className="nav-btn" title="Select next as NEXT" onClick={() => handleSelectPrevNext(1)}>ΓÅ¡</button>
             </div>
             <div className="t-zone-sep" />
             <div className={`t-zone t-zone-counter ${isLive ? 'is-live' : ''}`}>
               <div className={`t-counter-block t-counter-live ${isLive ? 'on-air' : ''}`}>
                 <span className="t-counter-label">LIVE</span>
-                <span className="t-counter-val"><b>{isLive ? programCueNum : '—'}</b></span>
+                <span className="t-counter-val"><b>{isLive ? programCueNum : 'ΓÇö'}</b></span>
               </div>
               <div className="t-counter-block t-counter-next">
                 <span className="t-counter-label">NEXT</span>
@@ -1962,8 +1658,8 @@ export function Controller() {
                 </div>
               </div>
               <div className="progress-labels progress-labels--centered">
-                <span title="Elapsed">{isLive ? timeElapsed : '—'}</span>
-                <span title="Remaining (countdown)">{isLive ? timeRemain : '—'}</span>
+                <span title="Elapsed">{isLive ? timeElapsed : 'ΓÇö'}</span>
+                <span title="Remaining (countdown)">{isLive ? timeRemain : 'ΓÇö'}</span>
               </div>
               <div className="progress-status" title={isLive ? 'Time remaining on current cue' : 'Playback stopped'}>
                 {isLive ? `Current cue time remaining: ${timeRemain}` : 'Not running'}
@@ -1984,7 +1680,7 @@ export function Controller() {
                   }, (fadeOutDur || 1) * 1000);
                 }}
               >
-                ↓ FADE
+                Γåô FADE
               </button>
               <select
                 className="pgm-fade-to-select"
@@ -1995,7 +1691,7 @@ export function Controller() {
                 <option value="black">Black</option>
                 <option value="transparent">Transparent</option>
               </select>
-              <button type="button" className="pgm-btn cut-btn" title="Cut program to black" onClick={() => { setProgramEocFadeActive(false); setProgramEocFadeOverlayOpacity(0); setProgramEocContentOpacity(1); setProgramCueItemIdx(-1); setIsLive(false); sendToPlayout({ type: 'stop' }, playoutWindowRef.current); }}>✕ CLEAR</button>
+              <button type="button" className="pgm-btn cut-btn" title="Cut program to black" onClick={() => { setProgramEocFadeActive(false); setProgramEocFadeOverlayOpacity(0); setProgramEocContentOpacity(1); setIsLive(false); sendToPlayout({ type: 'stop' }, playoutWindowRef.current); }}>Γ£ò CLEAR</button>
             </div>
             <div className="t-zone-sep" />
             <div className="t-zone t-zone-take">
@@ -2019,7 +1715,7 @@ export function Controller() {
               <input
                 type="search"
                 className="settings-search-input"
-                placeholder="Search settings…"
+                placeholder="Search settingsΓÇª"
                 value={settingsSearchQuery}
                 onChange={(e) => setSettingsSearchQuery(e.target.value)}
                 aria-label="Search settings"
@@ -2052,7 +1748,7 @@ export function Controller() {
                   <span className="sec-status" style={{ fontSize: 10 }}>
                     {analyzeOnImport ? (useAiAnalysis ? 'AI on' : 'Size only') : 'Off'}
                   </span>
-                  <span className="coll-chevron">▶</span>
+                  <span className="coll-chevron">Γû╢</span>
                 </div>
               </div>
               <div className={`coll-body ${openSections.aiAnalysis ? 'open' : ''}`}>
@@ -2080,7 +1776,7 @@ export function Controller() {
                   ) : analyzingCueId === previewCue.id ? (
                     <div className="analysis-processing" aria-busy="true">
                       <span className="analysis-spinner" aria-hidden />
-                      <span>Analyzing image…</span>
+                      <span>Analyzing imageΓÇª</span>
                       <span style={{ fontSize: 10, color: 'var(--text3)' }}>{useAiAnalysis ? 'Content &amp; motion' : 'Image size'}</span>
                     </div>
                   ) : previewCue.analysis ? (
@@ -2117,7 +1813,7 @@ export function Controller() {
                       <div style={{ marginBottom: 4 }}>
                         <strong>Recommended mode:</strong> {previewCue.analysis.recommendedMode}
                         {previewCue.analysis.recommendReason && (
-                          <span style={{ color: 'var(--text3)', fontSize: 10 }}> — {previewCue.analysis.recommendReason}</span>
+                          <span style={{ color: 'var(--text3)', fontSize: 10 }}> ΓÇö {previewCue.analysis.recommendReason}</span>
                         )}
                       </div>
                     )}
@@ -2125,13 +1821,13 @@ export function Controller() {
                       <div style={{ marginBottom: 4 }}>
                         <strong>Motion:</strong> {previewCue.analysis.kbAnim}
                         {previewCue.analysis.kbAnimReason && (
-                          <span style={{ color: 'var(--text3)', fontSize: 10 }}> — {previewCue.analysis.kbAnimReason}</span>
+                          <span style={{ color: 'var(--text3)', fontSize: 10 }}> ΓÇö {previewCue.analysis.kbAnimReason}</span>
                         )}
                       </div>
                     )}
                     {previewCue.kbCustomStart && previewCue.kbCustomEnd && (
                       <div style={{ marginBottom: 4, fontSize: 10, color: 'var(--text3)' }}>
-                        Keyframes: full frame → subject (AI)
+                        Keyframes: full frame ΓåÆ subject (AI)
                       </div>
                     )}
                     {previewCue.analysis.tags?.length ? (
@@ -2139,7 +1835,7 @@ export function Controller() {
                     ) : null}
                   </div>
                 ) : (
-                  <span style={{ color: 'var(--text3)', fontSize: 10 }}>No analysis for this cue. Enable “Analyze on import” and add images to get suggestions.</span>
+                  <span style={{ color: 'var(--text3)', fontSize: 10 }}>No analysis for this cue. Enable ΓÇ£Analyze on importΓÇ¥ and add images to get suggestions.</span>
                 )}
                 </div>
               </div>
@@ -2150,7 +1846,7 @@ export function Controller() {
                 <div className="sec-label">Playback Mode {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelMode === 'fullscreen' ? 'Full Screen' : panelMode === 'blurbg' ? 'Blur BG' : 'Split'}</span>
-                  <span className="coll-chevron">▶</span>
+                  <span className="coll-chevron">Γû╢</span>
                 </div>
               </div>
               <div className={`coll-body ${openSections.playbackMode ? 'open' : ''}`}>
@@ -2185,7 +1881,7 @@ export function Controller() {
                         </span>
                       </div>
                       <div className="mode-mini-desc">
-                        {mode === 'fullscreen' ? 'Fills frame — max impact' : mode === 'blurbg' ? 'Subject centred, blurred fill' : 'Image + caption / broadcast look'}
+                        {mode === 'fullscreen' ? 'Fills frame ΓÇö max impact' : mode === 'blurbg' ? 'Subject centred, blurred fill' : 'Image + caption / broadcast look'}
                       </div>
                     </div>
                   ))}
@@ -2315,8 +2011,8 @@ export function Controller() {
               <div className={`coll-hdr ${openSections.timing ? 'open' : ''}`} onClick={() => !(false) && toggleSection('timing')}>
                 <div className="sec-label">Timing {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="sec-status">{panelHoldDuration}s · FADE {panelFadeInDur}/{panelFadeOutDur}</span>
-                  <span className="coll-chevron">▶</span>
+                  <span className="sec-status">{panelHoldDuration}s ┬╖ FADE {panelFadeInDur}/{panelFadeOutDur}</span>
+                  <span className="coll-chevron">Γû╢</span>
                 </div>
               </div>
               <div className={`coll-body ${openSections.timing ? 'open' : ''}`}>
@@ -2357,7 +2053,7 @@ export function Controller() {
                 <div className="sec-label">End of Cue {panelAppliesToCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelEndOfCueBehavior === 'hold' ? 'HOLD' : panelEndOfCueBehavior === 'fade' ? 'FADE' : 'CLEAR'}</span>
-                  <span className="coll-chevron">▶</span>
+                  <span className="coll-chevron">Γû╢</span>
                 </div>
               </div>
               <div className={`coll-body ${openSections.eoc ? 'open' : ''}`}>
@@ -2379,7 +2075,7 @@ export function Controller() {
                 <div className="sec-label">Motion {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span className="sec-status">{panelKbDirection === 'auto' ? 'Auto (AI)' : panelKbDirection}</span>
-                  <span className="coll-chevron">▶</span>
+                  <span className="coll-chevron">Γû╢</span>
                 </div>
               </div>
               <div className={`coll-body ${openSections.motion ? 'open' : ''}`}>
@@ -2402,7 +2098,7 @@ export function Controller() {
                           if (opt === 'custom') setOpenSections((s) => ({ ...s, motion: true }));
                         }}
                       >
-                        {opt === 'auto' ? 'AUTO' : opt === 'zoom-in' ? 'ZOOM IN' : opt === 'zoom-out' ? 'ZOOM OUT' : opt === 'pan-right' ? 'PAN →' : opt === 'pan-left' ? '← PAN' : opt === 'drift' ? 'DRIFT' : '✦ CUSTOM — set start & end points'}
+                        {opt === 'auto' ? 'AUTO' : opt === 'zoom-in' ? 'ZOOM IN' : opt === 'zoom-out' ? 'ZOOM OUT' : opt === 'pan-right' ? 'PAN ΓåÆ' : opt === 'pan-left' ? 'ΓåÉ PAN' : opt === 'drift' ? 'DRIFT' : 'Γ£ª CUSTOM ΓÇö set start & end points'}
                       </button>
                     ))}
                   </div>
@@ -2428,34 +2124,34 @@ export function Controller() {
                         </div>
                         <ThumbnailOverlay imageSrc={previewCue.src} userId={user?.id ?? null} startXYZ={startXYZ} endXYZ={endXYZ} kbScale={kbScale} editingFrame={kbEditingFrame} />
                         <div style={sectionStyle}>
-                          <span style={{ ...labelStyle, color: '#f5c518' }}>▶ START</span>
+                          <span style={{ ...labelStyle, color: '#f5c518' }}>Γû╢ START</span>
                           <AxisSlider label="X" value={startXYZ.cx} min={X_MIN} max={X_MAX} step={1} color="#f5c518" onChange={(v) => setAxis('start', 'cx', v)} />
                           <AxisSlider label="Y" value={startXYZ.cy} min={Y_MIN} max={Y_MAX} step={1} color="#f5c518" onChange={(v) => setAxis('start', 'cy', v)} />
                           <AxisSlider label="Z" value={startXYZ.z} min={Z_MIN} max={Z_MAX} step={Z_STEP} color="#f5c518" onChange={(v) => setAxis('start', 'z', v)} />
                         </div>
                         <div style={sectionStyle}>
-                          <span style={{ ...labelStyle, color: '#3b9eff' }}>■ END</span>
+                          <span style={{ ...labelStyle, color: '#3b9eff' }}>Γûá END</span>
                           <AxisSlider label="X" value={endXYZ.cx} min={X_MIN} max={X_MAX} step={1} color="#3b9eff" onChange={(v) => setAxis('end', 'cx', v)} />
                           <AxisSlider label="Y" value={endXYZ.cy} min={Y_MIN} max={Y_MAX} step={1} color="#3b9eff" onChange={(v) => setAxis('end', 'cy', v)} />
                           <AxisSlider label="Z" value={endXYZ.z} min={Z_MIN} max={Z_MAX} step={Z_STEP} color="#3b9eff" onChange={(v) => setAxis('end', 'z', v)} />
                         </div>
                         <div style={{ fontSize: 11, color: 'var(--text3)', lineHeight: 1.5 }}>
-                          X,Y = center (0–100). Z = zoom (1 = full frame, 2 = 2× zoom). Boxes above are <em>display only</em> — sliders are the source of truth.
+                          X,Y = center (0ΓÇô100). Z = zoom (1 = full frame, 2 = 2├ù zoom). Boxes above are <em>display only</em> ΓÇö sliders are the source of truth.
                         </div>
                         <div className="kb-point-actions" style={{ display: 'flex', gap: 8 }}>
                           <button type="button" className="kb-point-btn" style={{ flex: 1 }} onClick={() => setCues((prev) => prev.map((c) => {
                             if (c.id !== previewCueId || !c.kbCustomStart || !c.kbCustomEnd) return c;
                             return { ...c, kbCustomStart: c.kbCustomEnd, kbCustomEnd: c.kbCustomStart, kbStartCx: c.kbEndCx, kbStartCy: c.kbEndCy, kbStartZ: c.kbEndZ, kbEndCx: c.kbStartCx, kbEndCy: c.kbStartCy, kbEndZ: c.kbStartZ };
-                          }))}>⇄ Swap</button>
-                          <button type="button" className="kb-point-btn" style={{ flex: 1 }} onClick={() => setCues((prev) => applyXYZ(applyXYZ(prev, previewCueId, 'start', 50, 50, 1), previewCueId, 'end', 50, 50, 2))}>↺ Reset</button>
-                          <button type="button" className="kb-point-btn" style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }} onClick={() => setPvwPlayKey((k) => k + 1)}>▶ Preview</button>
+                          }))}>Γçä Swap</button>
+                          <button type="button" className="kb-point-btn" style={{ flex: 1 }} onClick={() => setCues((prev) => applyXYZ(applyXYZ(prev, previewCueId, 'start', 50, 50, 1), previewCueId, 'end', 50, 50, 2))}>Γå║ Reset</button>
+                          <button type="button" className="kb-point-btn" style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }} onClick={() => setPvwPlayKey((k) => k + 1)}>Γû╢ Preview</button>
                         </div>
                       </div>
                     );
                   })()}
                 </div>
                 <div style={{ marginTop: 10 }}>
-                  <button type="button" className={`adv-toggle ${motionAdvOpen ? 'open' : ''}`} onClick={() => setMotionAdvOpen((o) => !o)}>Advanced ›</button>
+                  <button type="button" className={`adv-toggle ${motionAdvOpen ? 'open' : ''}`} onClick={() => setMotionAdvOpen((o) => !o)}>Advanced ΓÇ║</button>
                 </div>
                 {motionAdvOpen && (
                   <div className="ctrl-row" style={{ marginTop: 8 }}>
@@ -2465,7 +2161,7 @@ export function Controller() {
                 )}
                 {motionAdvOpen && (
                   <div className="ctrl-row" style={{ marginTop: 4, marginBottom: 0 }}>
-                    <div className="ctrl-label">Motion speed <em>1–5</em></div>
+                    <div className="ctrl-label">Motion speed <em>1ΓÇô5</em></div>
                     <input type="range" min={1} max={5} value={panelMotionSpeed} onChange={(e) => setPanelMotionSpeed(Number(e.target.value))} />
                   </div>
                 )}
@@ -2478,8 +2174,8 @@ export function Controller() {
               <div className={`coll-hdr ${openSections.transition ? 'open' : ''}`} onClick={() => !(false) && toggleSection('transition')}>
                 <div className="sec-label">Transition {panelCanEditCue && <span className="sec-applies">(this cue)</span>}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="sec-status">{panelTransitionType.toUpperCase()} · {panelTransDuration}s</span>
-                  <span className="coll-chevron">▶</span>
+                  <span className="sec-status">{panelTransitionType.toUpperCase()} ┬╖ {panelTransDuration}s</span>
+                  <span className="coll-chevron">Γû╢</span>
                 </div>
               </div>
               <div className={`coll-body ${openSections.transition ? 'open' : ''}`}>
@@ -2554,7 +2250,7 @@ export function Controller() {
                     <button type="button" className={panelCaptionStyle.position !== 'off' ? 'active-on' : ''} onClick={() => setPanelCaptionStyle((c) => ({ ...c, position: c.position === 'off' ? 'bottom' : c.position }))}>ON</button>
                     <button type="button" className={panelCaptionStyle.position === 'off' ? 'active-off' : ''} onClick={() => setPanelCaptionStyle((c) => ({ ...c, position: 'off' }))}>OFF</button>
                   </div>
-                  <span className="coll-chevron">▶</span>
+                  <span className="coll-chevron">Γû╢</span>
                 </div>
               </div>
               <div className={`coll-body ${openSections.caption ? 'open' : ''}`}>
@@ -2568,7 +2264,7 @@ export function Controller() {
                   <label>TITLE TEXT</label>
                   <input
                     type="text"
-                    placeholder="Leave blank to use AI caption…"
+                    placeholder="Leave blank to use AI captionΓÇª"
                     value={previewCue?.captionTitle ?? ''}
                     onChange={(e) => {
                       if (!previewCueId) return;
@@ -2580,7 +2276,7 @@ export function Controller() {
                   <label>SUBTITLE</label>
                   <input
                     type="text"
-                    placeholder="Optional second line…"
+                    placeholder="Optional second lineΓÇª"
                     value={previewCue?.captionSub ?? ''}
                     onChange={(e) => {
                       if (!previewCueId) return;
@@ -2592,7 +2288,7 @@ export function Controller() {
                   <label>TAG LINE</label>
                   <input
                     type="text"
-                    placeholder="e.g. LIVE · BREAKING · REPORT"
+                    placeholder="e.g. LIVE ┬╖ BREAKING ┬╖ REPORT"
                     value={previewCue?.captionTag ?? ''}
                     onChange={(e) => {
                       if (!previewCueId) return;
@@ -2689,7 +2385,7 @@ export function Controller() {
           <div className="settings-modal rename-cue-modal" onClick={(e) => e.stopPropagation()}>
             <div className="settings-modal-header">
               <h2 id="rename-cue-modal-title" className="settings-modal-title">Name in cue list</h2>
-              <button type="button" className="settings-modal-close" onClick={() => setRenameCueModal(null)} aria-label="Close">✕</button>
+              <button type="button" className="settings-modal-close" onClick={() => setRenameCueModal(null)} aria-label="Close">Γ£ò</button>
             </div>
             <div className="settings-modal-body">
               <p className="settings-hint" style={{ marginBottom: 8 }}>Custom name shown in the cue list. Leave blank to use the file name.</p>
@@ -2727,7 +2423,7 @@ export function Controller() {
           <div className="settings-modal delete-cue-modal" onClick={(e) => e.stopPropagation()}>
             <div className="settings-modal-header">
               <h2 id="delete-cue-modal-title" className="settings-modal-title">Remove cue</h2>
-              <button type="button" className="settings-modal-close" onClick={() => setDeleteCueModal(null)} aria-label="Close">✕</button>
+              <button type="button" className="settings-modal-close" onClick={() => setDeleteCueModal(null)} aria-label="Close">Γ£ò</button>
             </div>
             <div className="settings-modal-body">
               <p className="settings-hint" style={{ marginBottom: 12 }}>
@@ -2766,13 +2462,13 @@ export function Controller() {
           <div className="settings-modal cloud-browser-modal" onClick={(e) => e.stopPropagation()}>
             <div className="settings-modal-header">
               <h2 id="cloud-browser-title" className="settings-modal-title">Import from cloud</h2>
-              <button type="button" className="settings-modal-close" onClick={() => setCloudBrowserOpen(false)} aria-label="Close">✕</button>
+              <button type="button" className="settings-modal-close" onClick={() => setCloudBrowserOpen(false)} aria-label="Close">Γ£ò</button>
             </div>
             <div className="settings-modal-body">
               {cloudFilesLoading ? (
-                <p className="settings-hint">Loading…</p>
+                <p className="settings-hint">LoadingΓÇª</p>
               ) : cloudFiles.length === 0 ? (
-                <p className="settings-hint">No images in your cloud yet. Upload with “Store images: Cloud” in Settings.</p>
+                <p className="settings-hint">No images in your cloud yet. Upload with ΓÇ£Store images: CloudΓÇ¥ in Settings.</p>
               ) : (
                 <>
                   <div className="cloud-browser-grid">
@@ -2818,7 +2514,7 @@ export function Controller() {
                 onClick={() => setSettingsModalOpen(false)}
                 aria-label="Close"
               >
-                ✕
+                Γ£ò
               </button>
             </div>
             <div className="settings-modal-body">
@@ -2881,7 +2577,7 @@ export function Controller() {
                 onClick={() => setNewProjectModalOpen(false)}
                 aria-label="Close"
               >
-                ✕
+                Γ£ò
               </button>
             </div>
             <div className="settings-modal-body">
@@ -2974,7 +2670,7 @@ export function Controller() {
                 onClick={() => setDeleteProjectModal(null)}
                 aria-label="Close"
               >
-                ✕
+                Γ£ò
               </button>
             </div>
             <div className="settings-modal-body">

@@ -95,6 +95,10 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 			this.cues = Array.isArray(this.state?.cues) ? this.state.cues : []
 			const n = this.cues.length
 			this.log('info', `State fetched code=${code} cues=${n}`)
+			if (n > 0) {
+				const c = this.cues[0]
+				this.log('debug', `First cue: name="${c.name}" displayName="${c.displayName}" buttonLabel="${c.buttonLabel}" eoc=${c.eoc} hasArrow=${String(c?.buttonLabel || c?.name || '').includes('→')}`)
+			}
 			if (n === 0) {
 				this.log('info', `Cues=0: open controller in browser with same code (${code}) and a project that has cues, then wait a few seconds`)
 			}

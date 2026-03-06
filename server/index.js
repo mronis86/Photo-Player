@@ -1,15 +1,17 @@
 /**
- * Backend API for image analysis. Uses Hugging Face via official SDK (correct router/URL).
- * Set HUGGING_FACE_TOKEN in .env — never exposed to the frontend.
+ * Backend API: image analysis, temp-asset (playout), and Companion API.
+ * One server for all. Set HUGGING_FACE_TOKEN in .env; set SUPABASE_* for Companion.
  */
 import path from 'path';
 import { fileURLToPath } from 'url';
+import http from 'http';
 import dotenv from 'dotenv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
 import express from 'express';
+import { companionApp, attachWs as attachCompanionWs } from '../companion/mount.js';
 import { imageSize } from 'image-size';
 import { InferenceClient } from '@huggingface/inference';
 
@@ -285,9 +287,25 @@ app.post('/api/analyze-image', async (req, res) => {
   });
 });
 
+// Companion API (same deployment): /state, /take, /next, etc. + WebSocket
+app.use(companionApp);
+
+// Production (e.g. Railway): serve built frontend and playout from dist so /api and Companion are same origin
+const isProduction = process.env.NODE_ENV === 'production';
+const distDir = path.join(__dirname, '..', 'dist');
+if (isProduction && distDir) {
+  app.use(express.static(distDir, { index: false }));
+  app.get('/playout.html', (req, res) => res.sendFile(path.join(distDir, 'playout.html')));
+  app.get('*', (req, res) => res.sendFile(path.join(distDir, 'index.html')));
+  console.log('Serving static from dist (production)');
+}
+
 const port = Number(process.env.PORT) || 3001;
-app.listen(port, () => {
+const server = http.createServer(app);
+attachCompanionWs(server);
+server.listen(port, () => {
   const status = token ? 'on' : 'off';
-  console.log('Frameflow API listening on http://localhost:' + port + ' (analysis: ' + status + ')');
-  console.log('  → Local playout: ensure both Vite (dev) and this server are running; /api proxies to this port.');
+  console.log('Frameflow listening on port ' + port + ' (analysis: ' + status + ', Companion: same server)');
+  if (isProduction) console.log('  → Production: SPA + /api (temp-asset, analyze) + Companion (/state, /take, …) on one origin.');
+  else console.log('  → Local: run Vite dev and proxy /api to this port.');
 });
