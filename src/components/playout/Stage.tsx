@@ -650,7 +650,10 @@ export function Stage() {
     if (window.opener && !window.opener.closed) {
       window.opener.postMessage({ type: 'connect', code }, '*');
     }
-    connectToPlayoutChannelAsPlayout(code, (msg) => messageHandlerRef.current?.(msg))
+    connectToPlayoutChannelAsPlayout(
+      code,
+      ((msg: { type: string; [key: string]: unknown }) => messageHandlerRef.current?.(msg as PlayoutMessage)) as (msg: { type: string; [key: string]: unknown }) => void
+    )
       .then(({ send, unsubscribe }) => {
         realtimeSendRef.current = send;
         realtimeUnsubscribeRef.current = unsubscribe;
