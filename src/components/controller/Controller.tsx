@@ -10,6 +10,7 @@ import { runImageAnalysis } from '../../lib/imageAnalysis';
 import { listProjects, loadProject, saveProject, deleteProject, type ProjectRow } from '../../lib/projects';
 import { uploadCueImage, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
 import { useAuth } from '../../contexts/AuthContext';
+import { supabase } from '../../lib/supabase';
 import { MonitorLayer } from './MonitorLayer';
 import { MediaImg } from './MediaImg';
 
@@ -519,7 +520,7 @@ export function Controller() {
   useEffect(() => {
     const code = connectionCode.trim().toUpperCase();
     if (!code) return;
-    const { unsubscribe, sendState } = joinCompanionChannelAsController(
+    const { unsubscribe } = joinCompanionChannelAsController(
       code,
       (cmd: CompanionCommandPayload) => {
         const cmdStr = cmd.type === 'cue' ? `cue ${cmd.cueIndex}` : cmd.type === 'fade' ? `fade ${cmd.fadeTo}` : cmd.type;
@@ -540,10 +541,21 @@ export function Controller() {
             console.log('[Companion] Sent state (requested by API), cues:', payload.cues?.length ?? 0);
           }
         },
+        onSubscribed: (sendStateFn) => {
+          companionSendStateRef.current = sendStateFn;
+          // Defer first send to next event loop so Realtime uses WebSocket, not REST fallback
+          const sendFirst = () => {
+            const payload = companionStateRef.current;
+            if (payload && sendStateFn) {
+              sendStateFn(payload);
+              console.log('[Companion] Channel SUBSCRIBED (WebSocket), sent state, cues:', payload.cues?.length ?? 0);
+            }
+          };
+          setTimeout(sendFirst, 0);
+        },
       }
     );
-    companionSendStateRef.current = sendState;
-    console.log('[Companion] Channel joined, code:', code);
+    console.log('[Companion] Channel joining, code:', code);
     return () => {
       companionSendStateRef.current = null;
       unsubscribe();
@@ -551,10 +563,34 @@ export function Controller() {
     };
   }, [connectionCode]);
 
+  // Companion API URL (Railway): when set, controller POSTs state over HTTP. Env is read at dev-server start; localStorage override works without restart.
+  const companionApiUrl = (() => {
+    const fromEnv = import.meta.env?.VITE_COMPANION_API_URL;
+    const fromStorage = typeof localStorage !== 'undefined' ? localStorage.getItem('companionApiUrl') : null;
+    const raw = (typeof fromEnv === 'string' && fromEnv.trim() ? fromEnv : fromStorage || '').trim();
+    if (!raw) return '';
+    return raw.replace(/\/+$/, '');
+  })();
+
+  // One-time log so you can see whether HTTP or Realtime is used
+  const companionApiUrlLoggedRef = useRef(false);
+  if (!companionApiUrlLoggedRef.current && connectionCode) {
+    companionApiUrlLoggedRef.current = true;
+    if (companionApiUrl) {
+      console.log('[Companion] Using Railway HTTP:', companionApiUrl, '– state will POST to API (cues should appear in module)');
+    } else {
+      console.warn(
+        '[Companion] Using Realtime only – Railway will show hasState=false. To use HTTP: set VITE_COMPANION_API_URL in .env and restart dev server, OR in the console run: localStorage.setItem("companionApiUrl","https://photo-player-production.up.railway.app"); location.reload();'
+      );
+    }
+  }
+
+  // Send to Companion only when state actually changes. Prefer HTTP POST to Railway when VITE_COMPANION_API_URL is set.
+  const companionLastSentRef = useRef<{ liveIndex: number; nextIndex: number; isLive: boolean; playoutConnected: boolean; cuesLength: number; cueIdsKey: string } | null>(null);
+
   useEffect(() => {
-    const send = companionSendStateRef.current;
-    if (!send) return;
     const nextIndex = previewCueId != null ? flatCueIds.indexOf(previewCueId) : -1;
+    const nextIdx = nextIndex >= 0 ? nextIndex : 0;
     const cuesSummary = flatCueIds.map((id, index) => {
       const cue = cues.find((c) => c.id === id);
       return {
@@ -567,42 +603,100 @@ export function Controller() {
     });
     const payload: CompanionStatePayload = {
       liveIndex: programCueItemIdx,
-      nextIndex: nextIndex >= 0 ? nextIndex : 0,
+      nextIndex: nextIdx,
       isLive,
       playoutConnected,
       cues: cuesSummary,
     };
     companionStateRef.current = payload;
-    send(payload);
-    console.log('[Companion] State sent, cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIndex >= 0 ? nextIndex : 0);
-  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected]);
 
-  // Re-broadcast state so Companion API/module gets cues: every 500ms for 10s, then every 2.5s
+    const cueIdsKey = flatCueIds.join(',');
+    const prev = companionLastSentRef.current;
+    const changed =
+      !prev ||
+      prev.liveIndex !== programCueItemIdx ||
+      prev.nextIndex !== nextIdx ||
+      prev.isLive !== isLive ||
+      prev.playoutConnected !== playoutConnected ||
+      prev.cuesLength !== cuesSummary.length ||
+      prev.cueIdsKey !== cueIdsKey;
+
+    if (!changed) return;
+
+    companionLastSentRef.current = {
+      liveIndex: programCueItemIdx,
+      nextIndex: nextIdx,
+      isLive,
+      playoutConnected,
+      cuesLength: cuesSummary.length,
+      cueIdsKey,
+    };
+
+    const code = connectionCode.trim().toUpperCase();
+    if (!code) return;
+
+    // Always persist to Supabase table so Railway/Companion can read via GET /state (no POST or Realtime needed).
+    if (supabase) {
+      supabase
+        .from('companion_state')
+        .upsert(
+          { connection_code: code, state: payload, updated_at: new Date().toISOString() },
+          { onConflict: 'connection_code' }
+        )
+        .then(({ error }) => {
+          if (error) console.warn('[Companion] companion_state upsert failed', error.message);
+        })
+        .catch(() => {});
+    }
+
+    if (companionApiUrl) {
+      fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+        .then((r) => {
+          if (r.ok) console.log('[Companion] POST /state succeeded, cues:', cuesSummary.length);
+          else r.text().then((t) => console.warn('[Companion] POST /state failed', r.status, r.statusText, t));
+        })
+        .catch((err) => console.warn('[Companion] POST /state failed (network/CORS?)', err.message));
+      console.log('[Companion] State sent (HTTP), cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIdx);
+    } else {
+      const send = companionSendStateRef.current;
+      if (send) {
+        send(payload);
+        console.log('[Companion] State sent (Realtime), cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIdx);
+      }
+    }
+  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected, connectionCode, companionApiUrl]);
+
+  // Slow heartbeat: keep Supabase table and (if URL set) Railway in sync.
   useEffect(() => {
     if (!connectionCode) return;
-    const fastMs = 10000;
-    const fastInterval = 500;
-    const slowInterval = 2500;
-    const fastId = setInterval(() => {
+    const code = connectionCode.trim().toUpperCase();
+    const intervalMs = 10000;
+    const id = setInterval(() => {
       const payload = companionStateRef.current;
-      const send = companionSendStateRef.current;
-      if (payload && send) send(payload);
-    }, fastInterval);
-    let slowId: ReturnType<typeof setInterval> | null = null;
-    const switchId = setTimeout(() => {
-      clearInterval(fastId);
-      slowId = setInterval(() => {
-        const payload = companionStateRef.current;
+      if (!payload) return;
+      if (supabase) {
+        supabase.from('companion_state').upsert(
+          { connection_code: code, state: payload, updated_at: new Date().toISOString() },
+          { onConflict: 'connection_code' }
+        ).catch(() => {});
+      }
+      if (companionApiUrl) {
+        fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }).catch(() => {});
+      } else {
         const send = companionSendStateRef.current;
-        if (payload && send) send(payload);
-      }, slowInterval);
-    }, fastMs);
-    return () => {
-      clearInterval(fastId);
-      clearTimeout(switchId);
-      if (slowId) clearInterval(slowId);
-    };
-  }, [connectionCode]);
+        if (send) send(payload);
+      }
+    }, intervalMs);
+    return () => clearInterval(id);
+  }, [connectionCode, companionApiUrl]);
 
   useEffect(() => {
     try {

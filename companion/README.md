@@ -8,7 +8,16 @@ HTTP + **WebSocket** API for **Bitfocus Companion**. Uses the **same connection 
 
 Flow: **Companion → Railway (HTTP or WebSocket) → Supabase Realtime → Controller (browser)**.
 
-**Cue list / state:** The API does **not** read from any Supabase table or projects table. The **controller** (browser) holds the current project and cue list in memory and **broadcasts** state (liveIndex, nextIndex, cues, etc.) on the Realtime channel `companion:CODE`. The Railway API subscribes to that channel and **caches** the latest state in memory. When the Companion module polls `GET /state`, it gets that cached state. So: **controller → Realtime broadcast → API cache → module**. When you connect or change the cue list in the controller, it re-broadcasts; the API also requests state when it first subscribes so cues appear soon after the module connects.
+**Cue list / state – Supabase table (recommended):**
+
+The **controller** writes state to a Supabase table **`companion_state`** whenever state changes. The **Railway API** reads from that table when the Companion module calls `GET /state`. So Railway and Companion see cues even when the browser never POSTs to Railway (e.g. when `VITE_COMPANION_API_URL` is not set).
+
+- **You must run the migration** that creates `companion_state`. From the repo root:  
+  `npx supabase db push`  
+  or in Supabase Dashboard → SQL Editor, run the contents of **`supabase/migrations/006_companion_state.sql`**.
+- The controller (webapp) and Railway use the **same** Supabase project; anon key can read/write the table.
+
+**Optional:** If you also set **`VITE_COMPANION_API_URL`** in the webapp, the controller will POST state to Railway as well; the API still falls back to the table when in-memory state is empty.
 
 ---
 
@@ -34,8 +43,9 @@ Set **SUPABASE_URL** and **SUPABASE_ANON_KEY** in the Railway project (Variables
 
 Base URL: your Railway URL (e.g. `https://your-app.railway.app`).
 
-| Method | Path | Query | Description |
-|--------|------|-------|-------------|
+| Method | Path | Query / Body | Description |
+|--------|------|----------------|-------------|
+| **POST** | `/state` | `?code=AB12XY`, body: JSON state | **Controller** pushes state (cues, liveIndex, etc.). Use this when `VITE_COMPANION_API_URL` is set so cues work without Realtime. |
 | GET | `/state` | `?code=AB12XY` | Current state (liveIndex, nextIndex, isLive, playoutConnected, cues). |
 | GET | `/cues` | `?code=AB12XY` | Cue list (index, id, name, displayName, captionTitle). |
 | GET | `/take` | `?code=AB12XY` | Take preview to program. |

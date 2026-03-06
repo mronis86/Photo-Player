@@ -41,18 +41,17 @@ export interface CompanionCommandPayload {
 export interface JoinCompanionChannelOptions {
   /** When the API (or another client) requests state, call this so the controller sends current state. */
   onRequestState?: () => void;
+  /** When the channel is SUBSCRIBED (WebSocket ready), call this with sendState so the controller can use it. Sending before SUBSCRIBED uses REST and may not reach other clients. */
+  onSubscribed?: (sendState: (state: CompanionStatePayload) => void) => void;
 }
 
 export function joinCompanionChannelAsController(
   code: string,
   onCommand: (cmd: CompanionCommandPayload) => void,
   options?: JoinCompanionChannelOptions
-): { unsubscribe: () => void; sendState: (state: CompanionStatePayload) => void } {
+): { unsubscribe: () => void } {
   if (!supabase) {
-    return {
-      unsubscribe: () => {},
-      sendState: () => {},
-    };
+    return { unsubscribe: () => {} };
   }
   const name = getCompanionChannelName(code);
   const channel = supabase.channel(name);
@@ -62,7 +61,6 @@ export function joinCompanionChannelAsController(
   channel.on('broadcast', { event: COMPANION_EVENT_REQUEST_STATE }, () => {
     options?.onRequestState?.();
   });
-  channel.subscribe();
 
   function sendState(state: CompanionStatePayload) {
     channel.send({
@@ -72,10 +70,15 @@ export function joinCompanionChannelAsController(
     });
   }
 
+  channel.subscribe((status) => {
+    if (status === 'SUBSCRIBED') {
+      options?.onSubscribed?.(sendState);
+    }
+  });
+
   return {
     unsubscribe: () => {
       void supabase.removeChannel(channel);
     },
-    sendState,
   };
 }

@@ -27,9 +27,15 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   process.exit(1);
 }
 
+// Log which Supabase project we use – must match the webapp or state never arrives
+try {
+  const u = new URL(SUPABASE_URL);
+  console.log('[Companion API] Supabase project:', u.origin, '(must match your webapp .env / VITE_SUPABASE_URL)');
+} catch (_) {}
+
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-/** code -> { channel, state, wsClients: Set } */
+/** code -> { state, channel?, wsClients: Set }. State can come from HTTP POST (primary) or Supabase Realtime. */
 const channelsByCode = new Map();
 
 /** WebSocket clients registered per code (for pushing state) */
@@ -40,19 +46,30 @@ function getWsClients(code) {
   return entry?.wsClients ?? null;
 }
 
-function getOrCreateChannel(code) {
+/** Get or create entry. State can be set by POST /state without creating a Supabase channel. */
+function getOrCreateEntry(code) {
   const key = code.trim().toUpperCase();
   if (!key) return null;
   let entry = channelsByCode.get(key);
   if (entry) return entry;
+  entry = { state: null, channel: null, wsClients: new Set() };
+  channelsByCode.set(key, entry);
+  return entry;
+}
+
+/** Ensure Supabase channel exists (for sending commands). Created on first command or when using Realtime state. */
+function getOrCreateChannel(code) {
+  const key = code.trim().toUpperCase();
+  if (!key) return null;
+  const entry = getOrCreateEntry(key);
+  if (entry.channel) return entry;
   const name = getCompanionChannelName(key);
   const channel = supabase.channel(name);
-  entry = { channel, state: null, wsClients: new Set() };
-  channelsByCode.set(key, entry);
+  entry.channel = channel;
   channel.on('broadcast', { event: COMPANION_EVENT_STATE }, ({ payload }) => {
     entry.state = payload;
     const cueCount = Array.isArray(payload?.cues) ? payload.cues.length : 0;
-    console.log(`[Companion API] state received code=${key} cues=${cueCount} liveIndex=${payload?.liveIndex ?? -1}`);
+    console.log(`[Companion API] state received (Realtime) code=${key} cues=${cueCount} liveIndex=${payload?.liveIndex ?? -1}`);
     entry.wsClients.forEach((ws) => {
       if (ws.readyState === 1) {
         try {
@@ -79,6 +96,16 @@ const app = express();
 app.use(express.json());
 app.set('etag', false);
 
+// CORS: allow webapp (controller) to POST state from browser
+const ALLOW_ORIGIN = (process.env.ALLOW_ORIGIN || '*').trim();
+app.use((req, res, next) => {
+  res.set('Access-Control-Allow-Origin', ALLOW_ORIGIN);
+  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 function getCode(req) {
   return (req.query.code || req.body?.code || '').trim().toUpperCase();
 }
@@ -93,8 +120,25 @@ function requireCode(req, res, next) {
   next();
 }
 
-// --- Fetch ---
-// When we have no cached state, wait briefly for controller to respond to request_state (max 2s)
+// --- State: HTTP primary. Controller POSTs state; module GETs it. No Realtime required for state. ---
+app.post('/state', requireCode, (req, res) => {
+  const entry = getOrCreateEntry(req.companionCode);
+  const body = req.body || {};
+  const liveIndex = typeof body.liveIndex === 'number' ? body.liveIndex : -1;
+  const nextIndex = typeof body.nextIndex === 'number' ? body.nextIndex : 0;
+  entry.state = {
+    liveIndex,
+    nextIndex,
+    isLive: Boolean(body.isLive),
+    playoutConnected: Boolean(body.playoutConnected),
+    cues: Array.isArray(body.cues) ? body.cues : [],
+  };
+  const cueCount = entry.state.cues.length;
+  console.log(`[Companion API] POST /state code=${req.companionCode} cues=${cueCount} liveIndex=${liveIndex}`);
+  res.json({ ok: true });
+});
+
+// When we have no cached state, wait briefly for controller to respond (max 2s) – only if using Realtime path
 function waitForState(entry, maxMs = 2000) {
   return new Promise((resolve) => {
     if (entry.state) {
@@ -107,35 +151,58 @@ function waitForState(entry, maxMs = 2000) {
         resolve(entry.state);
         return;
       }
-      if (Date.now() - start >= maxMs) {
-        resolve(null);
-        return;
-      }
-      setTimeout(check, 100);
+      if (Date.now() - start >= maxMs) resolve(null);
+      else setTimeout(check, 100);
     };
     setTimeout(check, 150);
   });
 }
 
-app.get('/state', requireCode, async (req, res) => {
-  const entry = getOrCreateChannel(req.companionCode);
-  let state = entry.state;
-  if (!state) {
-    state = await waitForState(entry);
+// Read state from Supabase table (controller writes there; works even when browser never POSTs to Railway)
+async function fetchStateFromTable(code) {
+  const key = String(code).trim().toUpperCase();
+  if (!key) return null;
+  try {
+    const { data, error } = await supabase.from('companion_state').select('state').eq('connection_code', key).maybeSingle();
+    if (error) {
+      console.warn('[Companion API] companion_state select failed', error.message);
+      return null;
+    }
+    if (data?.state && typeof data.state === 'object') return data.state;
+    return null;
+  } catch (e) {
+    console.warn('[Companion API] companion_state fetch error', e?.message || e);
+    return null;
   }
+}
+
+app.get('/state', requireCode, async (req, res) => {
+  const entry = getOrCreateEntry(req.companionCode);
+  let state = entry.state;
+  let fromTable = false;
+  if (!state) {
+    state = await fetchStateFromTable(req.companionCode);
+    if (state) {
+      entry.state = state;
+      fromTable = true;
+    }
+  }
+  if (!state) state = await waitForState(entry);
   state = state || { liveIndex: -1, nextIndex: 0, isLive: false, playoutConnected: false, cues: [] };
   const cueCount = Array.isArray(state.cues) ? state.cues.length : 0;
-  console.log(`[Companion API] GET /state code=${req.companionCode} hasState=${!!entry.state} cues=${cueCount}`);
+  console.log(`[Companion API] GET /state code=${req.companionCode} hasState=${!!entry.state} cues=${cueCount}${fromTable ? ' (from table)' : ''}`);
   res.json(state);
 });
 
 app.get('/cues', requireCode, (req, res) => {
-  const entry = getOrCreateChannel(req.companionCode);
+  const entry = getOrCreateEntry(req.companionCode);
   const cues = entry.state?.cues ?? [];
   res.json(cues);
 });
 
 // --- Trigger ---
+// Commands are broadcast to the controller via Supabase Realtime. On Node/Railway you may see
+// "Realtime send() is automatically falling back to REST API" – delivery still works.
 function sendCommand(code, payload) {
   const entry = getOrCreateChannel(code);
   const cmdStr = payload.type === 'cue' ? `cue ${payload.cueIndex}` : payload.type === 'fade' ? `fade ${payload.fadeTo}` : payload.type;
