@@ -3,6 +3,7 @@
  */
 import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import type { PlayoutPayload, WipeDirection } from '../../lib/types';
+import type { PlayoutMessage } from '../../lib/playoutChannel';
 import { subscribeToPlayout, subscribeToWindowMessage, getPlayoutChannel, connectToPlayoutChannelAsPlayout, HEARTBEAT_INTERVAL_MS } from '../../lib/playoutChannel';
 import {
   getKBAnimationName,
