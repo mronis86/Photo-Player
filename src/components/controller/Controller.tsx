@@ -329,6 +329,8 @@ export function Controller() {
   const [analyzingCueId, setAnalyzingCueId] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [currentProjectName, setCurrentProjectName] = useState('');
+  /** Permanent Companion code for the current project (from DB). When set, Companion uses this instead of session connectionCode. */
+  const [currentProjectCompanionCode, setCurrentProjectCompanionCode] = useState<string | null>(null);
   const [projectList, setProjectList] = useState<ProjectRow[]>([]);
   const [projectListOpen, setProjectListOpen] = useState(false);
   const [deleteProjectModal, setDeleteProjectModal] = useState<ProjectRow | null>(null);
@@ -516,9 +518,12 @@ export function Controller() {
     return () => clearInterval(id);
   }, [playoutConnected]);
 
-  // Companion (Bitfocus): same code as output; subscribe to commands and broadcast state
+  // Companion code: use project's permanent code when a project is open, otherwise session connectionCode
+  const companionCodeForSession = (currentProjectCompanionCode ?? connectionCode).trim().toUpperCase();
+
+  // Companion (Bitfocus): subscribe to commands and broadcast state; use project code when project is open
   useEffect(() => {
-    const code = connectionCode.trim().toUpperCase();
+    const code = companionCodeForSession;
     if (!code) return;
     const { unsubscribe } = joinCompanionChannelAsController(
       code,
@@ -555,13 +560,13 @@ export function Controller() {
         },
       }
     );
-    console.log('[Companion] Channel joining, code:', code);
+    console.log('[Companion] Channel joining, code:', code, currentProjectCompanionCode ? '(project)' : '');
     return () => {
       companionSendStateRef.current = null;
       unsubscribe();
       console.log('[Companion] Channel left');
     };
-  }, [connectionCode]);
+  }, [companionCodeForSession, currentProjectCompanionCode]);
 
   // Companion API URL (Railway): when set, controller POSTs state over HTTP. Env is read at dev-server start; localStorage override works without restart.
   const companionApiUrl = (() => {
@@ -574,7 +579,7 @@ export function Controller() {
 
   // One-time log so you can see whether HTTP or Realtime is used
   const companionApiUrlLoggedRef = useRef(false);
-  if (!companionApiUrlLoggedRef.current && connectionCode) {
+  if (!companionApiUrlLoggedRef.current && companionCodeForSession) {
     companionApiUrlLoggedRef.current = true;
     if (companionApiUrl) {
       console.log('[Companion] Using Railway HTTP:', companionApiUrl, '– state will POST to API (cues should appear in module)');
@@ -632,21 +637,27 @@ export function Controller() {
       cueIdsKey,
     };
 
-    const code = connectionCode.trim().toUpperCase();
+    const code = companionCodeForSession;
     if (!code) return;
 
-    // Always persist to Supabase table so Railway/Companion can read via GET /state (no POST or Realtime needed).
+    // Always persist to Supabase table so Railway/Companion can read via GET /state.
     if (supabase) {
-      supabase
+      void supabase
         .from('companion_state')
         .upsert(
           { connection_code: code, state: payload, updated_at: new Date().toISOString() },
           { onConflict: 'connection_code' }
         )
-        .then(({ error }) => {
-          if (error) console.warn('[Companion] companion_state upsert failed', error.message);
-        })
-        .catch(() => {});
+        .then(
+          ({ error }) => {
+            if (error) {
+              console.error('[Companion] companion_state upsert failed –', error.message, '| Code:', code, '| Cues:', cuesSummary.length, '| Check RLS: allow authenticated to insert/update (migration 008).');
+            } else {
+              console.log('[Companion] companion_state saved, code:', code, 'cues:', cuesSummary.length);
+            }
+          },
+          (err) => console.error('[Companion] companion_state upsert error', err)
+        );
     }
 
     if (companionApiUrl) {
@@ -668,21 +679,26 @@ export function Controller() {
         console.log('[Companion] State sent (Realtime), cues:', cuesSummary.length, 'liveIndex:', programCueItemIdx, 'nextIndex:', nextIdx);
       }
     }
-  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected, connectionCode, companionApiUrl]);
+  }, [programCueItemIdx, previewCueId, flatCueIds, cues, isLive, playoutConnected, companionCodeForSession, companionApiUrl]);
 
   // Slow heartbeat: keep Supabase table and (if URL set) Railway in sync.
   useEffect(() => {
-    if (!connectionCode) return;
-    const code = connectionCode.trim().toUpperCase();
+    if (!companionCodeForSession) return;
+    const code = companionCodeForSession;
     const intervalMs = 10000;
     const id = setInterval(() => {
       const payload = companionStateRef.current;
       if (!payload) return;
       if (supabase) {
-        supabase.from('companion_state').upsert(
-          { connection_code: code, state: payload, updated_at: new Date().toISOString() },
-          { onConflict: 'connection_code' }
-        ).catch(() => {});
+        void supabase
+          .from('companion_state')
+          .upsert(
+            { connection_code: code, state: payload, updated_at: new Date().toISOString() },
+            { onConflict: 'connection_code' }
+          )
+          .then(({ error }) => {
+            if (error) console.warn('[Companion] heartbeat companion_state failed', error.message);
+          }, () => {});
       }
       if (companionApiUrl) {
         fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
@@ -696,7 +712,7 @@ export function Controller() {
       }
     }, intervalMs);
     return () => clearInterval(id);
-  }, [connectionCode, companionApiUrl]);
+  }, [companionCodeForSession, companionApiUrl]);
 
   useEffect(() => {
     try {
@@ -1376,6 +1392,7 @@ export function Controller() {
   const handleCreateNewProject = () => {
     setCurrentProjectId(null);
     setCurrentProjectName(newProjectName.trim() || 'Untitled');
+    setCurrentProjectCompanionCode(null);
     setStoreImagesMode(newProjectStoreMode);
     setAnalyzeOnImport(newProjectAnalyzeOnImport);
     setCues([]);
@@ -1389,8 +1406,9 @@ export function Controller() {
   const handleSaveProject = async () => {
     setProjectSaveError(null);
     try {
-      const id = await saveProject(currentProjectId, currentProjectName, { cues, sections });
+      const { id, companionCode } = await saveProject(currentProjectId, currentProjectName, { cues, sections });
       setCurrentProjectId(id);
+      if (companionCode) setCurrentProjectCompanionCode(companionCode);
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Save failed');
     }
@@ -1419,6 +1437,7 @@ export function Controller() {
       setSections(payload.sections);
       setCurrentProjectId(id);
       setCurrentProjectName(projectList.find((p) => p.id === id)?.name ?? '');
+      setCurrentProjectCompanionCode(payload.companionCode || null);
       setProgramCueItemIdx(-1);
       const firstId = getFlatCueIds(payload.sections)[0] ?? null;
       setPreviewCueId(firstId);
@@ -1437,6 +1456,7 @@ export function Controller() {
       if (currentProjectId === project.id) {
         setCurrentProjectId(null);
         setCurrentProjectName('');
+        setCurrentProjectCompanionCode(null);
       }
       setDeleteProjectModal(null);
     } catch (e) {
@@ -1515,6 +1535,11 @@ export function Controller() {
             </div>
             <div className="current-project-label" title="Active project">
               Current: {currentProjectName || 'No project'}
+              {currentProjectCompanionCode && (
+                <span style={{ display: 'block', fontSize: 10, color: 'var(--text3)', marginTop: 2 }}>
+                  Companion: {currentProjectCompanionCode}
+                </span>
+              )}
             </div>
             {projectListOpen && projectList.length > 0 && (
               <ul className="project-list">

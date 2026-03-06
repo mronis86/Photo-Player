@@ -6,9 +6,11 @@ Use this to confirm: **page → Railway** (state) and **Companion → Railway �
 
 ## Before you start
 
-- **Supabase table for cues (required):** The controller writes state to the **`companion_state`** table; Railway reads from it so the Companion module sees cues. Apply the migration once:
-  - From the repo root: **`npx supabase db push`**
-  - Or in **Supabase Dashboard → SQL Editor**, run the SQL from **`supabase/migrations/006_companion_state.sql`**
+- **Supabase tables for cues (required):** The controller writes state to **`companion_state`**; Railway reads from it. You must run **both** migrations so writes work when you’re signed in:
+  - **006_companion_state.sql** – creates the table and anon policies (for Railway).
+  - **008_companion_state_authenticated_rls.sql** – allows **authenticated** users (signed-in controller) to insert/update. Without this, the table stays empty and you get 0 cues.
+  - From the repo root: **`npx supabase db push`**  
+  - Or in **Supabase Dashboard → SQL Editor**, run the contents of each migration file in order.
 - (Optional) **.env** can have `VITE_COMPANION_API_URL=https://your-app.up.railway.app`. If set and dev server was restarted, the controller also POSTs to Railway; the table is still used so cues work either way.
 - **Railway** service is deployed and running. In Railway → Variables: `SUPABASE_URL` and `SUPABASE_ANON_KEY` match your webapp (same Supabase project).
 - **Companion** module is installed and configured with the **same** Railway URL and a **6-character connection code** you’ll use in the controller.

@@ -27,10 +27,10 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   process.exit(1);
 }
 
-// Log which Supabase project we use – must match the webapp or state never arrives
+// Log which Supabase project we use – must match the webapp or companion_state table is empty here
 try {
   const u = new URL(SUPABASE_URL);
-  console.log('[Companion API] Supabase project:', u.origin, '(must match your webapp .env / VITE_SUPABASE_URL)');
+  console.log('[Companion API] Supabase project:', u.origin, '| Table companion_state must exist here and match webapp project');
 } catch (_) {}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -158,39 +158,41 @@ function waitForState(entry, maxMs = 2000) {
   });
 }
 
-// Read state from Supabase table (controller writes there; works even when browser never POSTs to Railway)
+// Read state from Supabase table (controller writes there). Railway must use same Supabase project as webapp.
 async function fetchStateFromTable(code) {
   const key = String(code).trim().toUpperCase();
   if (!key) return null;
   try {
     const { data, error } = await supabase.from('companion_state').select('state').eq('connection_code', key).maybeSingle();
     if (error) {
-      console.warn('[Companion API] companion_state select failed', error.message);
+      console.warn('[Companion API] companion_state SELECT failed code=', key, 'error=', error.message, 'code=', error.code);
       return null;
     }
-    if (data?.state && typeof data.state === 'object') return data.state;
+    if (data?.state && typeof data.state === 'object') {
+      const n = Array.isArray(data.state.cues) ? data.state.cues.length : 0;
+      console.log('[Companion API] companion_state read code=', key, 'cues=', n);
+      return data.state;
+    }
+    console.log('[Companion API] companion_state no row for code=', key);
     return null;
   } catch (e) {
-    console.warn('[Companion API] companion_state fetch error', e?.message || e);
+    console.warn('[Companion API] companion_state fetch exception', e?.message || e);
     return null;
   }
 }
 
 app.get('/state', requireCode, async (req, res) => {
-  const entry = getOrCreateEntry(req.companionCode);
-  let state = entry.state;
-  let fromTable = false;
-  if (!state) {
-    state = await fetchStateFromTable(req.companionCode);
-    if (state) {
-      entry.state = state;
-      fromTable = true;
-    }
-  }
+  const code = req.companionCode;
+  // Always try table first (source of truth from controller); then in-memory; then wait for Realtime.
+  let state = await fetchStateFromTable(code);
+  const entry = getOrCreateEntry(code);
+  let fromTable = !!state;
+  if (state) entry.state = state;
+  if (!state) state = entry.state;
   if (!state) state = await waitForState(entry);
   state = state || { liveIndex: -1, nextIndex: 0, isLive: false, playoutConnected: false, cues: [] };
   const cueCount = Array.isArray(state.cues) ? state.cues.length : 0;
-  console.log(`[Companion API] GET /state code=${req.companionCode} hasState=${!!entry.state} cues=${cueCount}${fromTable ? ' (from table)' : ''}`);
+  console.log(`[Companion API] GET /state code=${code} cues=${cueCount}${fromTable ? ' (from table)' : ''}`);
   res.json(state);
 });
 

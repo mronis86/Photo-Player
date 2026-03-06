@@ -13,37 +13,53 @@ export interface ProjectRow {
   id: string;
   name: string;
   updated_at: string;
+  companion_code?: string;
+}
+
+/** Generate a 6-char code for Companion (same charset as controller). */
+export function generateCompanionCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
 }
 
 export async function listProjects(): Promise<ProjectRow[]> {
   if (!supabase) return [];
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, updated_at')
+    .select('id, name, updated_at, companion_code')
     .order('updated_at', { ascending: false });
   if (error) throw error;
   return (data ?? []) as ProjectRow[];
 }
 
-export async function loadProject(id: string): Promise<ProjectPayload> {
+export interface LoadedProject extends ProjectPayload {
+  companionCode: string;
+}
+
+export async function loadProject(id: string): Promise<LoadedProject> {
   if (!supabase) throw new Error('Supabase not configured');
   const { data, error } = await supabase
     .from('projects')
-    .select('payload')
+    .select('payload, companion_code')
     .eq('id', id)
     .single();
   if (error) throw error;
   const payload = data?.payload as ProjectPayload | null;
+  const companionCode = (data?.companion_code as string) ?? '';
   if (!payload) throw new Error('Project not found');
   const cues = payload.cues ?? [];
   const sections = payload.sections ?? [];
   const groups = payload.groups ?? [];
   const cueItems = payload.cueItems ?? [];
+  let resultSections = sections;
   if (sections.length === 0 && (groups.length > 0 || cueItems.length > 0)) {
-    const migrated = migrateGroupsToSections(groups, cueItems as LegacyCueItem[]);
-    return { cues, sections: migrated };
+    resultSections = migrateGroupsToSections(groups, cueItems as LegacyCueItem[]);
+  } else if (!resultSections.length) {
+    resultSections = [{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }];
   }
-  return { cues, sections: sections.length ? sections : [{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }] };
+  return { cues, sections: resultSections, companionCode: companionCode ?? '' };
 }
 
 type LegacyCueItem = { type: 'single'; id: string } | { type: 'group'; id: string };
@@ -69,7 +85,7 @@ export async function saveProject(
   projectId: string | null,
   name: string,
   payload: ProjectPayload
-): Promise<string> {
+): Promise<{ id: string; companionCode?: string }> {
   if (!supabase) throw new Error('Supabase not configured');
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Not signed in');
@@ -77,15 +93,17 @@ export async function saveProject(
   const updated_at = new Date().toISOString();
   const row = projectId
     ? { id: projectId, user_id: user.id, name: name || 'Untitled', payload, updated_at }
-    : { user_id: user.id, name: name || 'Untitled', payload, updated_at };
+    : { user_id: user.id, name: name || 'Untitled', payload, updated_at, companion_code: generateCompanionCode() };
 
   const { data, error } = await supabase
     .from('projects')
     .upsert(row, { onConflict: 'id' })
-    .select('id')
+    .select('id, companion_code')
     .single();
   if (error) throw error;
-  return (data?.id as string) ?? projectId ?? '';
+  const id = (data?.id as string) ?? projectId ?? '';
+  const companionCode = data?.companion_code as string | undefined;
+  return { id, companionCode: companionCode ?? undefined };
 }
 
 export async function deleteProject(id: string): Promise<void> {

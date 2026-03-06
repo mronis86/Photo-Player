@@ -19,6 +19,8 @@ The **controller** writes state to a Supabase table **`companion_state`** whenev
 
 **Optional:** If you also set **`VITE_COMPANION_API_URL`** in the webapp, the controller will POST state to Railway as well; the API still falls back to the table when in-memory state is empty.
 
+**If the webapp logs "companion_state saved" but Railway/Companion still show 0 cues:** Railway must use the **exact same** Supabase project as the webapp. In Railway → Variables, set **SUPABASE_URL** and **SUPABASE_ANON_KEY** to the same values as in your webapp `.env` (**VITE_SUPABASE_URL**, **VITE_SUPABASE_ANON_KEY**). If they differ, the controller writes to one project’s table and Railway reads from another (empty) project. After deploy, Railway logs will show either `companion_state read code= X cues= N` (success) or `companion_state no row for code= X` / `SELECT failed` (wrong project or RLS).
+
 ---
 
 ## Deploy to Railway (no local install)
