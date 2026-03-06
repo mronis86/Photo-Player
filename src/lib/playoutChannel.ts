@@ -126,7 +126,7 @@ export function joinPlayoutChannelAsController(
 /** Playout: join channel, send connect, receive all controller messages. Returns { send, unsubscribe }. */
 export function connectToPlayoutChannelAsPlayout(
   code: string,
-  onMessage: (message: PlayoutMessage) => void
+  onMessage: (message: PlayoutMessage | { type: string; [key: string]: unknown }) => void
 ): Promise<{ send: (message: PlayoutMessage) => void; unsubscribe: () => void }> {
   if (!supabase) return Promise.reject(new Error('Supabase not configured'));
   const name = getRealtimeChannelName(code);

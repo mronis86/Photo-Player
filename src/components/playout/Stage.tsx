@@ -653,7 +653,7 @@ export function Stage() {
     }
     connectToPlayoutChannelAsPlayout(
       code,
-      ((msg: { type: string; [key: string]: unknown }) => messageHandlerRef.current?.(msg as PlayoutMessage)) as (msg: { type: string; [key: string]: unknown }) => void
+      (msg: { type: string; [key: string]: unknown }) => messageHandlerRef.current?.(msg as PlayoutMessage)
     )
       .then(({ send, unsubscribe }) => {
         realtimeSendRef.current = send;
