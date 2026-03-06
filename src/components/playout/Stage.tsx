@@ -653,7 +653,8 @@ export function Stage() {
     }
     connectToPlayoutChannelAsPlayout(
       code,
-      (msg: { type: string; [key: string]: unknown }) => messageHandlerRef.current?.(msg as PlayoutMessage)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase Realtime infers callback type; we pass (msg) => handler(msg as PlayoutMessage)
+      (msg => messageHandlerRef.current?.(msg as PlayoutMessage)) as any
     )
       .then(({ send, unsubscribe }) => {
         realtimeSendRef.current = send;
