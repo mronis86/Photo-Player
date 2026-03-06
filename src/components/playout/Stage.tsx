@@ -653,8 +653,8 @@ export function Stage() {
     }
     connectToPlayoutChannelAsPlayout(
       code,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Supabase Realtime infers callback type; we pass (msg) => handler(msg as PlayoutMessage)
-      (msg => messageHandlerRef.current?.(msg as PlayoutMessage)) as any
+      // Explicit msg type avoids TS7006; cast to any satisfies Supabase-inferred callback type (TS2322)
+      ((msg: { type: string; [key: string]: unknown }) => messageHandlerRef.current?.(msg as PlayoutMessage)) as any
     )
       .then(({ send, unsubscribe }) => {
         realtimeSendRef.current = send;
