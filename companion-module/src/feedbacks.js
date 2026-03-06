@@ -2,7 +2,7 @@ const { combineRgb } = require('@companion-module/base')
 
 module.exports = async function (self) {
 	const cueChoices = (self.cues || []).map((c, i) => {
-		const label = c.displayName || c.captionTitle || c.name || `Cue ${i}`
+		const label = c.buttonLabel || c.displayName || c.captionTitle || c.name || `Cue ${i}`
 		return { id: i, label: `${i}: ${label}` }
 	})
 	if (cueChoices.length === 0) {
@@ -31,7 +31,10 @@ module.exports = async function (self) {
 			],
 			callback: (feedback) => {
 				const idx = Number(feedback.options?.cueIndex)
-				return Number.isFinite(idx) && (self.state?.liveIndex ?? -1) === idx
+				const liveIdx = Number(self.state?.liveIndex)
+				if (!Number.isFinite(idx)) return false
+				// When program cleared, liveIndex is -1 so no cue is live
+				return Number.isFinite(liveIdx) && liveIdx >= 0 && liveIdx === idx
 			},
 		},
 		next_cue_is: {
@@ -53,7 +56,9 @@ module.exports = async function (self) {
 			],
 			callback: (feedback) => {
 				const idx = Number(feedback.options?.cueIndex)
-				return Number.isFinite(idx) && (self.state?.nextIndex ?? 0) === idx
+				const nextIdx = Number(self.state?.nextIndex)
+				if (!Number.isFinite(idx)) return false
+				return Number.isFinite(nextIdx) && nextIdx >= 0 && nextIdx === idx
 			},
 		},
 		playout_connected: {
@@ -72,16 +77,30 @@ module.exports = async function (self) {
 			type: 'boolean',
 			label: 'Is live (program has a cue)',
 			defaultStyle: {
-				bgcolor: combineRgb(200, 80, 0),
+				bgcolor: combineRgb(180, 0, 0),
 				color: combineRgb(255, 255, 255),
 			},
 			options: [],
-			callback: () => self.state?.isLive === true,
+			// Only true when there is a program cue (liveIndex >= 0). Ignore isLive so stale state doesn’t keep Take red.
+			callback: () => {
+				const liveIdx = Number(self.state?.liveIndex)
+				return Number.isFinite(liveIdx) && liveIdx >= 0
+			},
+		},
+		button_text_playout_status: {
+			name: 'Button text: output status',
+			type: 'advanced',
+			label: 'Button text: OUTPUT CONNECTED / DISCONNECTED',
+			options: [],
+			callback: () => {
+				const connected = self.state?.playoutConnected === true
+				return { text: connected ? 'OUTPUT\nCONNECTED' : 'OUTPUT\nDISCONNECTED' }
+			},
 		},
 		button_text_cue_name: {
 			name: 'Button text: cue name',
 			type: 'advanced',
-			label: 'Button text from cue (index)',
+			label: 'Button text from cue (index) – updates when cue name changes',
 			options: [
 				{
 					id: 'cueIndex',
@@ -96,8 +115,9 @@ module.exports = async function (self) {
 				if (!Number.isFinite(idx)) return {}
 				const cues = self.cues || []
 				const c = cues[idx]
-				const text = c ? (c.displayName || c.captionTitle || c.name || `#${idx}`) : `#${idx}`
-				return { text }
+				const label = c ? (c.buttonLabel || c.displayName || c.captionTitle || c.name || 'Untitled') : 'Untitled'
+				const cueNum = idx + 1
+				return { text: `${cueNum}: ${label}` }
 			},
 		},
 	})

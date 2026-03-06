@@ -108,19 +108,30 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 	startPolling() {
 		if (this.pollInterval) clearInterval(this.pollInterval)
 		this.pollInterval = null
-		const seconds = Math.max(5, Math.min(120, parseInt(this.config?.pollIntervalSeconds, 10) || 10))
-		const ms = seconds * 1000
+		const syncCueList = this.config?.syncCueList !== false
 		const self = this
-		this.pollInterval = setInterval(async () => {
-			if (!self.getCode()) return
-			await self.fetchState()
-			self.updateActions()
-			self.updateFeedbacks()
-			self.updatePresets()
-			self.updateVariableDefinitions()
-			self.updateVariableValues()
-			self.checkAllFeedbacks()
-		}, ms)
+		if (syncCueList) {
+			const seconds = Math.max(5, Math.min(120, parseInt(this.config?.pollIntervalSeconds, 10) || 10))
+			this.pollInterval = setInterval(async () => {
+				if (!self.getCode()) return
+				await self.fetchState()
+				self.updateActions()
+				self.updateFeedbacks()
+				self.updatePresets()
+				self.updateVariableDefinitions()
+				self.updateVariableValues()
+				self.checkAllFeedbacks()
+			}, seconds * 1000)
+		} else {
+			const feedbackSeconds = Math.max(1, Math.min(60, parseInt(this.config?.feedbackPollIntervalSeconds, 10) || 3))
+			this.pollInterval = setInterval(async () => {
+				if (!self.getCode()) return
+				await self.fetchState()
+				self.updateFeedbacks()
+				self.updateVariableValues()
+				self.checkAllFeedbacks()
+			}, feedbackSeconds * 1000)
+		}
 	}
 
 	async apiGet(path) {
@@ -134,7 +145,7 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 		return res.json().catch(() => ({}))
 	}
 
-	getConfigFields() {
+		getConfigFields() {
 		return [
 			{
 				type: 'textinput',
@@ -153,14 +164,32 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 				tooltip: '6-character code from the controller (same as playout window).',
 			},
 			{
+				type: 'checkbox',
+				id: 'syncCueList',
+				label: 'Sync cue list',
+				width: 12,
+				default: true,
+				tooltip: 'When ON: poll and refresh cue presets/names. When OFF: only poll for live/next/Take feedback (no cue list refresh). Use OFF with a fast feedback interval for responsive buttons without constant preset churn.',
+			},
+			{
 				type: 'number',
 				id: 'pollIntervalSeconds',
-				label: 'Poll interval (seconds)',
+				label: 'Poll interval (seconds) – when Sync cue list is ON',
 				width: 6,
 				default: 10,
 				min: 5,
 				max: 120,
-				tooltip: 'How often to fetch state for feedback (5–120).',
+				tooltip: 'How often to fetch state and refresh cue list (5–120).',
+			},
+			{
+				type: 'number',
+				id: 'feedbackPollIntervalSeconds',
+				label: 'Feedback poll (seconds) – when Sync cue list is OFF',
+				width: 6,
+				default: 3,
+				min: 1,
+				max: 60,
+				tooltip: 'How often to fetch state for live/next/Take feedback only (1–60). Lower = more responsive buttons.',
 			},
 		]
 	}
@@ -171,7 +200,8 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 			'next_cue_is',
 			'playout_connected',
 			'is_live',
-			'button_text_cue_name'
+			'button_text_cue_name',
+			'button_text_playout_status'
 		)
 	}
 
@@ -189,7 +219,7 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 		const liveIndex = this.state?.liveIndex ?? -1
 		const nextIndex = this.state?.nextIndex ?? 0
 
-		// Take
+		// Take – grey when idle, red when live (program has a cue)
 		presets.take = {
 			type: 'button',
 			category: 'Transport',
@@ -198,9 +228,15 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 				text: 'TAKE',
 				size: 'auto',
 				color: combineRgb(255, 255, 255),
-				bgcolor: combineRgb(0, 120, 0),
+				bgcolor: combineRgb(90, 90, 90),
 			},
-			feedbacks: [],
+			feedbacks: [
+				{
+					feedbackId: 'is_live',
+					options: {},
+					style: { bgcolor: combineRgb(180, 0, 0), color: combineRgb(255, 255, 255) },
+				},
+			],
 			steps: [{ down: [{ actionId: 'take', options: {} }], up: [] }],
 		}
 
@@ -243,20 +279,20 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 				text: 'CLEAR',
 				size: 'auto',
 				color: combineRgb(255, 255, 255),
-				bgcolor: combineRgb(120, 0, 0),
+				bgcolor: combineRgb(70, 70, 80),
 			},
 			feedbacks: [],
 			steps: [{ down: [{ actionId: 'clear', options: {} }], up: [] }],
 		}
 
-		// Fade to black
+		// Fade to black (2 lines, smaller text to fit)
 		presets.fade_black = {
 			type: 'button',
 			category: 'Transport',
-			name: 'Fade to black',
+			name: 'Fade Black',
 			style: {
-				text: 'FADE',
-				size: 'auto',
+				text: 'Fade\nBlack',
+				size: '14',
 				color: combineRgb(255, 255, 255),
 				bgcolor: combineRgb(60, 60, 60),
 			},
@@ -264,19 +300,44 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 			steps: [{ down: [{ actionId: 'fade', options: { fadeTo: 'black' } }], up: [] }],
 		}
 
-		// Fade to transparent
+		// Fade to transparent (smaller text to fit)
 		presets.fade_transparent = {
 			type: 'button',
 			category: 'Transport',
-			name: 'Fade to transparent',
+			name: 'Fade Transparent',
 			style: {
-				text: 'FADE OUT',
-				size: 'auto',
+				text: 'Fade Transparent',
+				size: '14',
 				color: combineRgb(255, 255, 255),
 				bgcolor: combineRgb(60, 60, 80),
 			},
 			feedbacks: [],
 			steps: [{ down: [{ actionId: 'fade', options: { fadeTo: 'transparent' } }], up: [] }],
+		}
+
+		// Output / stage connection status (no action, just shows connected or not)
+		presets.output_status = {
+			type: 'button',
+			category: 'Transport',
+			name: 'Output status',
+			style: {
+				text: 'OUTPUT\nDISCONNECTED',
+				size: '14',
+				color: combineRgb(180, 180, 180),
+				bgcolor: combineRgb(50, 50, 50),
+			},
+			feedbacks: [
+				{
+					feedbackId: 'button_text_playout_status',
+					options: {},
+				},
+				{
+					feedbackId: 'playout_connected',
+					options: {},
+					style: { bgcolor: combineRgb(0, 140, 0), color: combineRgb(255, 255, 255) },
+				},
+			],
+			steps: [{ down: [], up: [] }],
 		}
 
 		// Cues category: always show. Placeholder when no cues; otherwise one preset per project cue.
@@ -297,13 +358,13 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 		} else {
 			for (let i = 0; i < cues.length; i++) {
 				const cue = cues[i]
-				const fileName = cue.displayName || cue.captionTitle || cue.name || 'Untitled'
+				const label = cue.buttonLabel || cue.displayName || cue.captionTitle || cue.name || 'Untitled'
 				const cueNum = i + 1
-				const buttonText = `${cueNum}: ${fileName}`
+				const buttonText = `${cueNum}: ${label}`
 				presets[`cue_${i}`] = {
 					type: 'button',
 					category: 'Cues',
-					name: `Go to cue ${cueNum}: ${fileName}`,
+					name: `Go to cue ${cueNum}: ${label}`,
 					style: {
 						text: buttonText,
 						size: 'auto',
@@ -311,6 +372,11 @@ class ImageMotionPlaybackInstance extends InstanceBase {
 						bgcolor: combineRgb(40, 40, 40),
 					},
 					feedbacks: [
+						{
+							feedbackId: 'button_text_cue_name',
+							options: { cueIndex: i },
+							// Drives button text from current cue name so renames in the webapp show up on next sync
+						},
 						{
 							feedbackId: 'live_cue_is',
 							options: { cueIndex: i },

@@ -6,7 +6,9 @@ Bitfocus Companion module for **FotoFlow: Image Motion Playback** (same connecti
 
 - **API Base URL** – Your Railway API URL (e.g. `https://your-app.up.railway.app`). No trailing slash.
 - **Connection Code** – 6-character code from the controller (same as playout).
-- **Poll interval** – How often to fetch state for feedback (5–120 seconds).
+- **Sync cue list** – When ON, each poll refreshes cue presets and names. When OFF, only state is fetched for **live/next/Take feedback** (no cue list churn); use with a fast **Feedback poll** for responsive buttons.
+- **Poll interval** – When Sync cue list is ON: how often to fetch and refresh (5–120 s).
+- **Feedback poll** – When Sync cue list is OFF: how often to fetch state for feedback only (1–60 s). Lower = more responsive Take/live/next highlights.
 
 ## Actions
 
@@ -19,8 +21,8 @@ Bitfocus Companion module for **FotoFlow: Image Motion Playback** (same connecti
 
 ## Presets
 
-- **Transport:** Take, Next, Prev, Clear, Fade to black, Fade to transparent
-- **Cues:** One preset per cue (from controller cue list) with live/next feedback; or fixed Cue 0–9 when no cues are loaded
+- **Transport:** Take (grey → red when live), Next, Prev, Clear (dark grey), Fade Black (2 lines), Fade Transparent, **Output status** (shows OUTPUT CONNECTED / DISCONNECTED; green when playout connected)
+- **Cues:** One preset per cue (from controller cue list) with live/next feedback; or placeholder when no cues are loaded. Cue preset **button text** (e.g. `1: filename`) is driven by the **Button text: cue name** feedback, so when you rename a cue in the webapp the button label updates on the next sync (within one poll interval).
 
 ## Feedbacks
 
@@ -28,7 +30,7 @@ Bitfocus Companion module for **FotoFlow: Image Motion Playback** (same connecti
 - **Next cue is** – Highlight when the selected cue index is next
 - **Playout connected** – Playout window is connected
 - **Is live** – Program has a cue
-- **Button text: cue name** – Show cue name by index
+- **Button text: cue name** – Sets button text to `N: cue name` from current state; used on cue presets so renames in the webapp auto-update the button
 
 ## Variables
 
