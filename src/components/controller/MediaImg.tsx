@@ -6,12 +6,13 @@ interface MediaImgProps {
   className?: string;
   alt?: string;
   style?: React.CSSProperties;
+  onLoad?: (e: React.SyntheticEvent<HTMLImageElement>) => void;
 }
 
 /**
  * Renders an img with cue.src, resolving Supabase storage paths to signed URLs.
  */
-export function MediaImg({ src, userId, className, alt = '', style }: MediaImgProps) {
+export function MediaImg({ src, userId, className, alt = '', style, onLoad }: MediaImgProps) {
   const { url, loading } = useMediaUrl(src, userId);
 
   if (!src) return null;
@@ -27,5 +28,5 @@ export function MediaImg({ src, userId, className, alt = '', style }: MediaImgPr
     );
   }
 
-  return <img src={displayUrl} alt={alt} className={className} style={style} />;
+  return <img src={displayUrl} alt={alt} className={className} style={style} onLoad={onLoad} />;
 }

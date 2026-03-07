@@ -81,10 +81,122 @@ console.log('Temp asset API: POST /api/temp-asset, GET /api/temp-asset/:id (for 
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
+});
+
+// --- Projects proxy: frontend calls us with user's JWT; we call Supabase (avoids CORS / 500 from browser)
+const SUPABASE_URL = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+function getUserIdFromToken(token) {
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+    return payload.sub || null;
+  } catch {
+    return null;
+  }
+}
+
+function supabaseFetch(path, { method = 'GET', body, token }) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    return Promise.reject(new Error('Supabase not configured on server (set SUPABASE_URL and SUPABASE_ANON_KEY)'));
+  }
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: SUPABASE_ANON_KEY,
+    Prefer: 'return=representation',
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return fetch(`${SUPABASE_URL}/rest/v1${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+}
+
+app.get('/api/projects', async (req, res) => {
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!token) return res.status(401).json({ error: 'Missing Authorization header' });
+  try {
+    const r = await supabaseFetch('/projects?select=id,name,updated_at,companion_code&order=updated_at.desc', { token });
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json(data || { error: 'Supabase error' });
+    return res.json(data);
+  } catch (e) {
+    console.warn('[projects] list error', e.message);
+    return res.status(500).json({ error: e.message || 'List failed' });
+  }
+});
+
+app.get('/api/projects/:id', async (req, res) => {
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!token) return res.status(401).json({ error: 'Missing Authorization header' });
+  try {
+    const r = await supabaseFetch(`/projects?id=eq.${encodeURIComponent(req.params.id)}&select=payload,companion_code`, { token });
+    const data = await r.json();
+    if (!r.ok) return res.status(r.status).json(data || { error: 'Supabase error' });
+    if (!Array.isArray(data) || data.length === 0) return res.status(404).json({ error: 'Project not found' });
+    const row = data[0];
+    return res.json({ payload: row.payload, companionCode: row.companion_code || '' });
+  } catch (e) {
+    console.warn('[projects] load error', e.message);
+    return res.status(500).json({ error: e.message || 'Load failed' });
+  }
+});
+
+app.post('/api/projects/save', async (req, res) => {
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!token) return res.status(401).json({ error: 'Missing Authorization header' });
+  const { projectId, name, payload } = req.body || {};
+  if (!payload || !payload.cues || !payload.sections) return res.status(400).json({ error: 'Missing name or payload (cues, sections)' });
+  const user_id = getUserIdFromToken(token);
+  if (!user_id) return res.status(401).json({ error: 'Invalid token' });
+  const updated_at = new Date().toISOString();
+  let row;
+  if (projectId) {
+    const getR = await supabaseFetch(`/projects?id=eq.${encodeURIComponent(projectId)}&select=companion_code`, { token });
+    const existing = await getR.json();
+    const companion_code = (Array.isArray(existing) && existing[0]?.companion_code) ? existing[0].companion_code : '';
+    row = { id: projectId, user_id, name: name || 'Untitled', payload, updated_at, companion_code };
+  } else {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    row = { user_id, name: name || 'Untitled', payload, updated_at, companion_code: code };
+  }
+  try {
+    const r = await supabaseFetch('/projects?on_conflict=id&select=id,companion_code', {
+      method: 'POST',
+      body: row,
+      token,
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      console.warn('[projects] save Supabase error', r.status, data);
+      return res.status(r.status).json(data || { error: 'Save failed' });
+    }
+    const out = Array.isArray(data) ? data[0] : data;
+    return res.json({ id: out?.id || projectId, companionCode: out?.companion_code });
+  } catch (e) {
+    console.warn('[projects] save error', e.message);
+    return res.status(500).json({ error: e.message || 'Save failed' });
+  }
+});
+
+app.delete('/api/projects/:id', async (req, res) => {
+  const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+  if (!token) return res.status(401).json({ error: 'Missing Authorization header' });
+  try {
+    const r = await supabaseFetch(`/projects?id=eq.${encodeURIComponent(req.params.id)}`, { method: 'DELETE', token });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      return res.status(r.status).json(data || { error: 'Delete failed' });
+    }
+    return res.status(204).send();
+  } catch (e) {
+    console.warn('[projects] delete error', e.message);
+    return res.status(500).json({ error: e.message || 'Delete failed' });
+  }
 });
 
 const token = process.env.HUGGING_FACE_TOKEN?.trim() || null;

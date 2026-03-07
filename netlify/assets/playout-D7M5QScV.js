@@ -1,0 +1,1 @@
+import{V as t,j as e,W as o,X as s,S as r,T as a,U as n}from"./Stage-CHy2OUmv.js";function c(){return e.jsx(s,{children:e.jsx(r,{children:e.jsx(a,{path:"*",element:e.jsx(n,{})})})})}t.createRoot(document.getElementById("root")).render(e.jsx(o.StrictMode,{children:e.jsx(c,{})}));

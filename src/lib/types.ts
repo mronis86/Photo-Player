@@ -39,6 +39,10 @@ export interface Cue {
   wipeDirection?: WipeDirection;
   zoomScale?: number;
   motionSpeed?: number;
+  /** Image native aspect ratio (width/height). Set when image loads in custom motion editor; used so custom points use correct zoom math for non-16:9 images. */
+  imageAspect?: number;
+  /** In custom point editor: 'fit' = show full image (contain), 'fill' = fill frame (cover). Default 'fit'. */
+  customPointScale?: 'fit' | 'fill';
 }
 
 export interface Analysis {

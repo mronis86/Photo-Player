@@ -137,6 +137,10 @@ function AxisSlider({ label, value, min, max, step, color, onChange }: AxisSlide
   );
 }
 
+const FRAME_ASPECT = 16 / 9;
+/** In toRect, horizontal is 0–100, vertical is 0–LOGICAL_H (16:9). Scale vertical % so 16:9 boxes don't stretch. */
+const LOGICAL_H = 100 * (9 / 16);
+
 interface ThumbnailOverlayProps {
   imageSrc: string;
   userId: string | null;
@@ -145,24 +149,73 @@ interface ThumbnailOverlayProps {
   kbScale: number;
   /** When set, show the image cropped to this frame (motion within crop box). When null, show full image with both boxes. */
   editingFrame: 'start' | 'end' | null;
+  /** 'fit' = show full image at native aspect (contain); 'fill' = fill frame (cover). */
+  scaleMode: 'fit' | 'fill';
+  /** Image native aspect (width/height). When scaleMode is 'fit' and this is set, image is contained and boxes mapped from image space. */
+  imageAspect?: number;
+  /** Called when image loads so we can store aspect on the cue for correct custom motion zoom math. */
+  onImageAspect?: (aspect: number) => void;
 }
+
+/** Image region in container % when image is object-fit: contain in a 16:9 frame. */
+function getContainedImageRegion(imageAspect: number): { left: number; top: number; width: number; height: number } {
+  if (imageAspect >= FRAME_ASPECT) {
+    const height = 100 * FRAME_ASPECT / imageAspect;
+    return { left: 0, top: (100 - height) / 2, width: 100, height };
+  }
+  const width = 100 * imageAspect / FRAME_ASPECT;
+  return { left: (100 - width) / 2, top: 0, width, height: 100 };
+}
+
 /** Fixed "frame" in editorial: centered, fixed size — zoom/pan happens inside it so the frame never moves. */
 const EDITORIAL_FRAME_INSET_PCT = 10;
-function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale, editingFrame }: ThumbnailOverlayProps) {
+
+function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale, editingFrame, scaleMode, imageAspect, onImageAspect }: ThumbnailOverlayProps) {
+  /** Box in logical space: x/w 0–100 (width), y/h 0–LOGICAL_H (height). cx/cy are 0–100 (%). */
   function toRect(xyz: { cx: number; cy: number; z: number }) {
     const effectiveZ = clamp(xyz.z * kbScale, 0.5, 10);
-    const size = 100 / effectiveZ;
+    const w = 100 / effectiveZ;
+    const h = w * (9 / 16);
+    const centerY = (xyz.cy / 100) * LOGICAL_H;
     return {
-      x: clamp(xyz.cx - size / 2, 0, 100 - size),
-      y: clamp(xyz.cy - size / 2, 0, 100 - size),
-      w: size,
-      h: size,
+      x: clamp(xyz.cx - w / 2, 0, 100 - w),
+      y: clamp(centerY - h / 2, 0, LOGICAL_H - h),
+      w,
+      h,
+    };
+  }
+  /** Convert logical rect to CSS % on a 16:9 container: x/w are % width, y/h (0–LOGICAL_H) → % height. */
+  function rectToCssPct(rect: { x: number; y: number; w: number; h: number }) {
+    return {
+      left: `${rect.x}%`,
+      top: `${(rect.y / LOGICAL_H) * 100}%`,
+      width: `${rect.w}%`,
+      height: `${(rect.h / LOGICAL_H) * 100}%`,
     };
   }
   const startRect = startXYZ ? toRect(startXYZ) : null;
   const endRect = endXYZ ? toRect(endXYZ) : null;
   const xyz = editingFrame === 'start' ? startXYZ : editingFrame === 'end' ? endXYZ : null;
   const imageTransform = xyz ? getCustomKBTransformFromXYZ(xyz.cx, xyz.cy, xyz.z, kbScale) : undefined;
+
+  const useFit = scaleMode === 'fit' && imageAspect != null && imageAspect > 0;
+  const objFit = useFit ? 'contain' : 'cover';
+  const region = useFit ? getContainedImageRegion(imageAspect!) : null;
+
+  function mapRectToContainer(rect: { x: number; y: number; w: number; h: number }) {
+    if (!region) return rect;
+    return {
+      left: region.left + (rect.x / 100) * region.width,
+      top: region.top + (rect.y / 100) * region.height,
+      width: (rect.w / 100) * region.width,
+      height: (rect.h / 100) * region.height,
+    };
+  }
+
+  const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    if (img.naturalWidth > 0 && img.naturalHeight > 0) onImageAspect?.(img.naturalWidth / img.naturalHeight);
+  };
 
   const frameStyle: React.CSSProperties = {
     position: 'absolute',
@@ -175,7 +228,7 @@ function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale, editing
   };
 
   return (
-    <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9', overflow: 'hidden', borderRadius: 4 }}>
+    <div style={{ position: 'relative', width: '100%', minWidth: 0, aspectRatio: '16/9', overflow: 'hidden', borderRadius: 4, background: '#000' }}>
       {editingFrame != null && xyz ? (
         <>
           <div style={frameStyle}>
@@ -183,12 +236,13 @@ function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale, editing
               src={imageSrc}
               userId={userId}
               alt=""
+              onLoad={handleImageLoad}
               style={{
                 position: 'absolute',
                 inset: 0,
                 width: '100%',
                 height: '100%',
-                objectFit: 'cover',
+                objectFit: objFit,
                 display: 'block',
                 transformOrigin: '50% 50%',
                 transform: imageTransform,
@@ -205,25 +259,32 @@ function ThumbnailOverlay({ imageSrc, userId, startXYZ, endXYZ, kbScale, editing
             src={imageSrc}
             userId={userId}
             alt=""
+            onLoad={handleImageLoad}
             style={{
               position: 'absolute',
               inset: 0,
               width: '100%',
               height: '100%',
-              objectFit: 'cover',
+              objectFit: objFit,
               display: 'block',
             }}
           />
-          {startRect && (
-            <div style={{ position: 'absolute', left: `${startRect.x}%`, top: `${startRect.y}%`, width: `${startRect.w}%`, height: `${startRect.h}%`, border: '2px solid #f5c518', boxSizing: 'border-box', pointerEvents: 'none' }}>
-              <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#f5c518', textShadow: '0 1px 3px #000', userSelect: 'none' }}>START</span>
-            </div>
-          )}
-          {endRect && (
-            <div style={{ position: 'absolute', left: `${endRect.x}%`, top: `${endRect.y}%`, width: `${endRect.w}%`, height: `${endRect.h}%`, border: '2px solid #3b9eff', boxSizing: 'border-box', pointerEvents: 'none' }}>
-              <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#3b9eff', textShadow: '0 1px 3px #000', userSelect: 'none' }}>END</span>
-            </div>
-          )}
+          {startRect && (() => {
+            const pct = rectToCssPct(startRect);
+            return (
+              <div style={{ position: 'absolute', ...pct, border: '2px solid #f5c518', boxSizing: 'border-box', pointerEvents: 'none' }}>
+                <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#f5c518', textShadow: '0 1px 3px #000', userSelect: 'none' }}>START</span>
+              </div>
+            );
+          })()}
+          {endRect && (() => {
+            const pct = rectToCssPct(endRect);
+            return (
+              <div style={{ position: 'absolute', ...pct, border: '2px solid #3b9eff', boxSizing: 'border-box', pointerEvents: 'none' }}>
+                <span style={{ position: 'absolute', top: 2, left: 4, fontSize: 10, fontWeight: 700, color: '#3b9eff', textShadow: '0 1px 3px #000', userSelect: 'none' }}>END</span>
+              </div>
+            );
+          })()}
         </>
       )}
     </div>
@@ -336,6 +397,7 @@ export function Controller() {
   const [projectListOpen, setProjectListOpen] = useState(false);
   const [deleteProjectModal, setDeleteProjectModal] = useState<ProjectRow | null>(null);
   const [projectSaveError, setProjectSaveError] = useState<string | null>(null);
+  const [projectSaving, setProjectSaving] = useState(false);
   const [projectLoadingId, setProjectLoadingId] = useState<string | null>(null);
   const [timeElapsed, setTimeElapsed] = useState('0:00');
   const [timeRemain, setTimeRemain] = useState('—');
@@ -379,7 +441,11 @@ export function Controller() {
   const takeOnNextPreviewRef = useRef(false);
   /** Preloaded resolved URL for current preview cue so Take can send instantly (Option 1: Railway responsiveness). */
   const preloadedUrlRef = useRef<{ cueId: string; src: string; url: string; isLocal: boolean } | null>(null);
+  const heartbeatCorsHintLoggedRef = useRef(false);
   const cuesRef = useRef(cues);
+  /** Serialized project state at last save/load/new; used to detect unsaved changes. */
+  const lastSavedSnapshotRef = useRef<string | null>(null);
+  const [saveSyncedTick, setSaveSyncedTick] = useState(0);
   const sectionsRef = useRef(sections);
   const settingsRef = useRef({ selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect });
   flatCueIdsRef.current = flatCueIds;
@@ -390,42 +456,51 @@ export function Controller() {
   settingsRef.current = { selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect };
   pvwSplitRef.current = pvwSplit;
 
+  const PROGRAM_MOTION_LEAD_MS = 300;
+
   // Program monitor: when programCrossfadeNextCue is set (fade or wipe), animate then commit
   useEffect(() => {
     if (!programCrossfadeNextCue) return;
     const kind = programTransitionKind;
     const durMs = programCrossfadeDurationRef.current * 1000;
-    const START_DELAY_MS = 80;
     const COMMIT_EXTRA_MS = 150;
 
-    const tStart = setTimeout(() => {
-      if (kind === 'fade') {
-        setProgramCrossfadeOutOpacity(0);
-        setProgramCrossfadeInOpacity(1);
-      }
-      // Wipe: programWipeRevealPct is driven by rAF below
-    }, START_DELAY_MS);
+    let fadeMotionLeadTimeout: ReturnType<typeof setTimeout> | undefined;
+    let fadeRafId1: number | undefined;
+    let fadeRafId2: number | undefined;
+    if (kind === 'fade') {
+      fadeMotionLeadTimeout = setTimeout(() => {
+        fadeRafId1 = requestAnimationFrame(() => {
+          fadeRafId2 = requestAnimationFrame(() => {
+            setProgramCrossfadeOutOpacity(0);
+            setProgramCrossfadeInOpacity(1);
+          });
+        });
+      }, PROGRAM_MOTION_LEAD_MS);
+    }
+    const START_DELAY_MS = 80;
 
     let wipeStartTime: number | null = null;
-    let rafId: number;
+    let wipeRafId: number | undefined;
     let wipeStartTimeout: ReturnType<typeof setTimeout>;
     const animateWipe = (now: number) => {
       if (wipeStartTime == null) wipeStartTime = now;
       const elapsed = now - wipeStartTime;
       const pct = Math.max(0, 100 - (elapsed / durMs) * 100);
       setProgramWipeRevealPct(pct);
-      if (pct > 0) rafId = requestAnimationFrame(animateWipe);
+      if (pct > 0) wipeRafId = requestAnimationFrame(animateWipe);
     };
     if (kind === 'wipe') {
       wipeStartTimeout = setTimeout(() => {
-        rafId = requestAnimationFrame((now) => {
+        wipeRafId = requestAnimationFrame((now: number) => {
           wipeStartTime = now;
           setProgramWipeRevealPct(100);
-          rafId = requestAnimationFrame(animateWipe);
+          wipeRafId = requestAnimationFrame(animateWipe);
         });
       }, START_DELAY_MS);
     }
 
+    const commitDelayMs = kind === 'fade' ? PROGRAM_MOTION_LEAD_MS + durMs + COMMIT_EXTRA_MS : durMs + COMMIT_EXTRA_MS;
     const tEnd = setTimeout(() => {
       const pending = pendingProgramTakeRef.current;
       if (pending != null) {
@@ -439,14 +514,18 @@ export function Controller() {
       setProgramCrossfadeOutOpacity(1);
       setProgramCrossfadeInOpacity(0);
       setProgramWipeRevealPct(100);
-    }, durMs + COMMIT_EXTRA_MS);
+    }, commitDelayMs);
 
     return () => {
-      clearTimeout(tStart);
+      if (kind === 'fade') {
+        if (fadeMotionLeadTimeout != null) clearTimeout(fadeMotionLeadTimeout);
+        if (fadeRafId1 != null) cancelAnimationFrame(fadeRafId1);
+        if (fadeRafId2 != null) cancelAnimationFrame(fadeRafId2);
+      }
       clearTimeout(tEnd);
       if (kind === 'wipe') {
         clearTimeout(wipeStartTimeout);
-        cancelAnimationFrame(rafId);
+        if (wipeRafId != null) cancelAnimationFrame(wipeRafId);
       }
     };
   }, [programCrossfadeNextCue, programTransitionKind]);
@@ -708,9 +787,24 @@ export function Controller() {
             { connection_code: code, state: payload, updated_at: new Date().toISOString() },
             { onConflict: 'connection_code' }
           )
-          .then(({ error }) => {
-            if (error) console.warn('[Companion] heartbeat companion_state failed', error.message);
-          }, () => {});
+          .then(
+            ({ error }) => {
+              if (error) {
+                console.warn('[Companion] heartbeat companion_state failed', error.message);
+                if (!heartbeatCorsHintLoggedRef.current && /failed to fetch|network|cors/i.test(String(error.message))) {
+                  heartbeatCorsHintLoggedRef.current = true;
+                  console.warn('[Companion] From localhost, add http://localhost:5173 to Supabase → Project Settings → API → Allowed origins. See docs/local-dev.md.');
+                }
+              }
+            },
+            (err) => {
+              const msg = err?.message ?? String(err);
+              if (!heartbeatCorsHintLoggedRef.current && /failed to fetch|network|cors/i.test(msg)) {
+                heartbeatCorsHintLoggedRef.current = true;
+                console.warn('[Companion] Request blocked (CORS/network). Add http://localhost:5173 to Supabase → Project Settings → API → Allowed origins. See docs/local-dev.md.');
+              }
+            }
+          );
       }
       if (companionApiUrl) {
         fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
@@ -939,6 +1033,15 @@ export function Controller() {
     setProgressPct(0);
     const totalDur = getCueHoldDuration(programCue, holdDuration);
     const fadeInSec = getCueFadeIn(programCue, fadeInDur);
+    const st = settingsRef.current;
+    const transDur = (programCue?.transDuration ?? st.transDuration) ?? 0.8;
+    const ids = flatCueIdsRef.current;
+    const idx = programCueItemIdxRef.current;
+    const isAutoNext = Boolean(programCue?.jumpToNext && idx >= 0 && idx < ids.length - 1);
+    const autoNextLeadSec = transDur + 0.3;
+    const triggerAtSec = Math.max(0, totalDur - (isAutoNext ? autoNextLeadSec : 0));
+    const triggerPct = totalDur > 0 ? (triggerAtSec / totalDur) * 100 : 100;
+
     const fmt = (s: number) => {
       const m = Math.floor(s / 60);
       const sec = Math.floor(s % 60);
@@ -954,13 +1057,13 @@ export function Controller() {
       setTimeElapsed(fmt(effectiveElapsed));
       setTimeRemain(fmt(Math.max(0, totalDur - effectiveElapsed)));
 
-      if (pct < 100) raf = requestAnimationFrame(tick);
+      if (pct < triggerPct) raf = requestAnimationFrame(tick);
       else {
-        const ids = flatCueIdsRef.current;
-        const idx = programCueItemIdxRef.current;
-        if (programCue?.jumpToNext && idx >= 0 && idx < ids.length - 1) {
+        const idsNext = flatCueIdsRef.current;
+        const idxNext = programCueItemIdxRef.current;
+        if (programCue?.jumpToNext && idxNext >= 0 && idxNext < idsNext.length - 1) {
           takeOnNextPreviewRef.current = true;
-          setPreviewCueId(ids[idx + 1]);
+          setPreviewCueId(idsNext[idxNext + 1]);
           return;
         }
         const eoc = getCueEOC(programCue, endOfCueBehavior);
@@ -1455,16 +1558,34 @@ export function Controller() {
     setPreviewCueId(null);
     setProjectSaveError(null);
     setNewProjectModalOpen(false);
+    lastSavedSnapshotRef.current = null;
   };
+
+  const getProjectSnapshot = () =>
+    JSON.stringify({ projectId: currentProjectId, projectName: currentProjectName, cues, sections });
+  const hasUnsavedChanges =
+    (lastSavedSnapshotRef.current != null && lastSavedSnapshotRef.current !== getProjectSnapshot()) ||
+    (lastSavedSnapshotRef.current === null && (cues.length > 0 || currentProjectName !== '' || currentProjectId != null));
 
   const handleSaveProject = async () => {
     setProjectSaveError(null);
+    setProjectSaving(true);
     try {
       const { id, companionCode } = await saveProject(currentProjectId, currentProjectName, { cues, sections });
+      lastSavedSnapshotRef.current = JSON.stringify({ projectId: id, projectName: currentProjectName, cues, sections });
       setCurrentProjectId(id);
       if (companionCode) setCurrentProjectCompanionCode(companionCode);
+      setSaveSyncedTick((t) => t + 1);
     } catch (e) {
-      setProjectSaveError(e instanceof Error ? e.message : 'Save failed');
+      const msg = e instanceof Error ? e.message : 'Save failed';
+      const isNetworkOrCors = msg === 'Failed to fetch' || /network|cors|allow-origin/i.test(msg);
+      setProjectSaveError(
+        isNetworkOrCors
+          ? 'Save failed: request blocked (CORS/network). From localhost, add http://localhost:5173 to Supabase → Project Settings → API → Allowed origins.'
+          : msg
+      );
+    } finally {
+      setProjectSaving(false);
     }
   };
 
@@ -1490,12 +1611,19 @@ export function Controller() {
       const payload = await loadProject(id);
       setCues(payload.cues);
       setSections(payload.sections);
+      const name = projectList.find((p) => p.id === id)?.name ?? '';
       setCurrentProjectId(id);
-      setCurrentProjectName(projectList.find((p) => p.id === id)?.name ?? '');
+      setCurrentProjectName(name);
       setCurrentProjectCompanionCode(payload.companionCode || null);
       setProgramCueItemIdx(-1);
       const firstId = getFlatCueIds(payload.sections)[0] ?? null;
       setPreviewCueId(firstId);
+      lastSavedSnapshotRef.current = JSON.stringify({
+        projectId: id,
+        projectName: name,
+        cues: payload.cues,
+        sections: payload.sections,
+      });
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Load failed');
     } finally {
@@ -1583,8 +1711,21 @@ export function Controller() {
               <button type="button" className="btn-sm" onClick={handleNewProject}>
                 New
               </button>
-              <button type="button" className="btn-sm" onClick={handleSaveProject}>
-                Save
+              <button
+                type="button"
+                className={`btn-sm${!projectSaving && hasUnsavedChanges ? ' btn-unsaved' : ''}`}
+                onClick={handleSaveProject}
+                disabled={projectSaving}
+                title={projectSaving ? 'Saving…' : hasUnsavedChanges ? 'You have unsaved changes' : 'Save project'}
+              >
+                {projectSaving ? (
+                  <>
+                    <span className="spinner" style={{ marginRight: 6, verticalAlign: 'middle' }} aria-hidden />
+                    Saving…
+                  </>
+                ) : (
+                  'Save'
+                )}
               </button>
               <button
                 type="button"
@@ -1632,7 +1773,9 @@ export function Controller() {
               </ul>
             )}
             {projectSaveError && (
-              <p style={{ fontSize: 10, color: 'var(--red)', marginTop: 6 }}>{projectSaveError}</p>
+              <p style={{ fontSize: 10, color: 'var(--red)', marginTop: 6, maxWidth: 280 }} title={projectSaveError}>
+                {projectSaveError}
+              </p>
             )}
           </div>
           <div className="sec">
@@ -2471,6 +2614,8 @@ export function Controller() {
                     const startXYZ = getCueStartXYZ(previewCue) ?? { cx: 50, cy: 50, z: 1 };
                     const endXYZ = getCueEndXYZ(previewCue) ?? { cx: 50, cy: 50, z: 2 };
                     const kbScale = getKBScaleVar(previewCue, panelZoomScale);
+                    const objectFit = previewCue.modeOpts?.fullscreen?.objectFit ?? modeOpts?.fullscreen?.objectFit ?? 'cover';
+                    const customScale = objectFit === 'contain' ? 'fit' : 'fill';
                     const sectionStyle: React.CSSProperties = { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6, padding: '10px 12px', marginBottom: 8 };
                     const labelStyle: React.CSSProperties = { fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', marginBottom: 8, display: 'block' };
                     function setAxis(which: 'start' | 'end', axis: 'cx' | 'cy' | 'z', raw: number) {
@@ -2481,11 +2626,33 @@ export function Controller() {
                     }
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                        <div className="kb-pick-row">
+                        <div className="kb-pick-row kb-pick-row--wide">
                           <button type="button" className={`kb-pick-btn ${kbEditingFrame === 'start' ? 'active-start' : ''}`} onClick={() => setKbEditingFrame((f) => (f === 'start' ? null : 'start'))}>View Start</button>
                           <button type="button" className={`kb-pick-btn ${kbEditingFrame === 'end' ? 'active-end' : ''}`} onClick={() => setKbEditingFrame((f) => (f === 'end' ? null : 'end'))}>View End</button>
                         </div>
-                        <ThumbnailOverlay imageSrc={previewCue.src} userId={user?.id ?? null} startXYZ={startXYZ} endXYZ={endXYZ} kbScale={kbScale} editingFrame={kbEditingFrame} />
+                        <div className="kb-scale-row">
+                          <button type="button" className={`kb-scale-btn ${customScale === 'fit' ? 'on-b' : ''}`} onClick={() => previewCueId && setCues((prev) => prev.map((c) => {
+                            if (c.id !== previewCueId) return c;
+                            const base = getCueModeOpts(c, modeOpts);
+                            return { ...c, customPointScale: 'fit' as const, modeOpts: { ...base, fullscreen: { ...base.fullscreen, objectFit: 'contain' as const } } };
+                          }))}>Fit</button>
+                          <button type="button" className={`kb-scale-btn ${customScale === 'fill' ? 'on-b' : ''}`} onClick={() => previewCueId && setCues((prev) => prev.map((c) => {
+                            if (c.id !== previewCueId) return c;
+                            const base = getCueModeOpts(c, modeOpts);
+                            return { ...c, customPointScale: 'fill' as const, modeOpts: { ...base, fullscreen: { ...base.fullscreen, objectFit: 'cover' as const } } };
+                          }))}>Fill</button>
+                        </div>
+                        <ThumbnailOverlay
+                          imageSrc={previewCue.src}
+                          userId={user?.id ?? null}
+                          startXYZ={startXYZ}
+                          endXYZ={endXYZ}
+                          kbScale={kbScale}
+                          editingFrame={kbEditingFrame}
+                          scaleMode={customScale}
+                          imageAspect={previewCue.imageAspect}
+                          onImageAspect={(aspect) => previewCueId && setCues((prev) => prev.map((c) => c.id === previewCueId ? { ...c, imageAspect: aspect } : c))}
+                        />
                         <div style={sectionStyle}>
                           <span style={{ ...labelStyle, color: '#f5c518' }}>▶ START</span>
                           <AxisSlider label="X" value={startXYZ.cx} min={X_MIN} max={X_MAX} step={1} color="#f5c518" onChange={(v) => setAxis('start', 'cx', v)} />

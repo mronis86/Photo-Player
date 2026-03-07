@@ -1,0 +1,1 @@
+import{X as t,j as e,Y as o,Z as s,U as r,V as a,W as n}from"./Stage-Do70Dmoz.js";function c(){return e.jsx(s,{children:e.jsx(r,{children:e.jsx(a,{path:"*",element:e.jsx(n,{})})})})}t.createRoot(document.getElementById("root")).render(e.jsx(o.StrictMode,{children:e.jsx(c,{})}));

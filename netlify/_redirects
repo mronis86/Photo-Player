@@ -1,0 +1,3 @@
+# SPA fallback: all routes serve index.html so React Router works on refresh.
+# (Drag-and-drop deploy does not use netlify.toml, so we need this file in the uploaded folder.)
+/*    /index.html   200

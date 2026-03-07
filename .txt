@@ -1,0 +1,34 @@
+================================================================================
+PHOTO PLAYER / FRAMEFLOW – Terminal commands (local, GitHub, Netlify)
+================================================================================
+
+---- LOCAL ----
+# Dev: need BOTH server + frontend for save/load
+npm run server
+# (second terminal)
+npm run dev
+# Open http://localhost:5173  (playout: http://localhost:5173/playout.html)
+
+# Production build
+npm run build
+
+# Build and fill netlify folder (for manual Netlify deploy)
+npm run build:netlify
+
+# Preview production build
+npm run preview
+
+# Companion (separate service)
+npm run companion
+
+---- GITHUB ----
+git status
+git add .
+git commit -m "your message here"
+git push origin main
+git pull origin main
+
+---- NETLIFY ----
+# 1. Build and copy to netlify folder
+npm run build:netlify
+# 2. Netlify dashboard → Deploys → drag and drop the "netlify" folder

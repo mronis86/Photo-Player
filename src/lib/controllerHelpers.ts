@@ -215,19 +215,27 @@ export function xyzToKbPoint(cx: number, cy: number, z: number): KbPoint {
   return { x, y, w: size, h: size };
 }
 
-/** Effective (cx, cy, z) for start: direct cue fields if set, else from rectangle. */
+/** Effective (cx, cy, z) for start: direct cue fields if set, else from rectangle. Uses imageAspect when set so non-16:9 images get correct zoom. */
 export function getCueStartXYZ(cue: Cue): { cx: number; cy: number; z: number } | null {
   if (cue.kbStartCx != null && cue.kbStartCy != null && cue.kbStartZ != null)
     return { cx: cue.kbStartCx, cy: cue.kbStartCy, z: cue.kbStartZ };
-  if (cue.kbCustomStart) return kbPointToXYZ(cue.kbCustomStart);
+  if (cue.kbCustomStart) {
+    if (cue.imageAspect != null && Number.isFinite(cue.imageAspect) && cue.imageAspect > 0)
+      return kbPointToXYZAspect(cue.kbCustomStart, cue.imageAspect);
+    return kbPointToXYZ(cue.kbCustomStart);
+  }
   return null;
 }
 
-/** Effective (cx, cy, z) for end: direct cue fields if set, else from rectangle. */
+/** Effective (cx, cy, z) for end: direct cue fields if set, else from rectangle. Uses imageAspect when set so non-16:9 images get correct zoom. */
 export function getCueEndXYZ(cue: Cue): { cx: number; cy: number; z: number } | null {
   if (cue.kbEndCx != null && cue.kbEndCy != null && cue.kbEndZ != null)
     return { cx: cue.kbEndCx, cy: cue.kbEndCy, z: cue.kbEndZ };
-  if (cue.kbCustomEnd) return kbPointToXYZ(cue.kbCustomEnd);
+  if (cue.kbCustomEnd) {
+    if (cue.imageAspect != null && Number.isFinite(cue.imageAspect) && cue.imageAspect > 0)
+      return kbPointToXYZAspect(cue.kbCustomEnd, cue.imageAspect);
+    return kbPointToXYZ(cue.kbCustomEnd);
+  }
   return null;
 }
 

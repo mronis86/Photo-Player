@@ -19,7 +19,7 @@ function getImageSrc(p: PlayoutPayload): string {
 }
 
 const STORAGE_KEY_BUFFER_MS = 'frameflow_playout_buffer_ms';
-const DEFAULT_BUFFER_MS = 300;
+const DEFAULT_BUFFER_MS = 500;
 const MIN_BUFFER_MS = 0;
 const MAX_BUFFER_MS = 2000;
 
@@ -240,6 +240,9 @@ export function Stage() {
       }
       if (d.type === 'preload' && typeof d.url === 'string' && d.url) {
         const img = new Image();
+        img.onload = () => {
+          if (typeof img.decode === 'function') img.decode().catch(() => {});
+        };
         img.src = d.url;
       }
       if (d.type === 'play') {
@@ -267,10 +270,17 @@ export function Stage() {
           if (src) {
             const img = new Image();
             preloadImageRef.current = img;
-            img.onload = () => {
+            const markReady = () => {
               incomingImageReadyRef.current = true;
               preloadImageRef.current = null;
               tryApplyPending();
+            };
+            img.onload = () => {
+              if (typeof img.decode === 'function') {
+                img.decode().then(markReady).catch(markReady);
+              } else {
+                markReady();
+              }
             };
             img.onerror = () => {
               incomingImageReadyRef.current = true;
@@ -350,17 +360,27 @@ export function Stage() {
     };
   }, [clearTimers]);
 
-  // Fade transition: when nextPayload is set and kind is fade, run opacity crossfade then commit
+  // Motion lead: incoming layer's Ken Burns runs this long at opacity 0 before we start the opacity transition (so motion is visible during fade)
+  const MOTION_LEAD_MS = 300;
+
+  // Fade transition: when nextPayload is set and kind is fade, wait for motion lead then run opacity crossfade then commit
   useEffect(() => {
     if (!nextPayload || crossfadeTransitionKind !== 'fade') return;
     const durMs = crossfadeDurationRef.current * 1000;
-    const START_DELAY_MS = 80;
     const COMMIT_EXTRA_MS = 150;
 
-    const tStart = setTimeout(() => {
-      setCrossfadeOutOpacity(0);
-      setCrossfadeInOpacity(1);
-    }, START_DELAY_MS);
+    let motionLeadTimeout: ReturnType<typeof setTimeout>;
+    let rafId1: number | undefined;
+    let rafId2: number | undefined;
+
+    motionLeadTimeout = setTimeout(() => {
+      rafId1 = requestAnimationFrame(() => {
+        rafId2 = requestAnimationFrame(() => {
+          setCrossfadeOutOpacity(0);
+          setCrossfadeInOpacity(1);
+        });
+      });
+    }, MOTION_LEAD_MS);
 
     crossfadeTimeoutRef.current = setTimeout(() => {
       setPayload(nextPayload);
@@ -371,10 +391,12 @@ export function Stage() {
       setCrossfadeTransitionKind('fade');
       setPlayKey((k) => k + 1);
       crossfadeTimeoutRef.current = null;
-    }, durMs + COMMIT_EXTRA_MS);
+    }, MOTION_LEAD_MS + durMs + COMMIT_EXTRA_MS);
 
     return () => {
-      clearTimeout(tStart);
+      clearTimeout(motionLeadTimeout);
+      if (rafId1 != null) cancelAnimationFrame(rafId1);
+      if (rafId2 != null) cancelAnimationFrame(rafId2);
       if (crossfadeTimeoutRef.current) {
         clearTimeout(crossfadeTimeoutRef.current);
         crossfadeTimeoutRef.current = null;
@@ -807,7 +829,7 @@ export function Stage() {
                 />
               </label>
               <div style={{ fontFamily: "'DM Mono'", fontSize: 9, color: '#555', marginTop: 8 }}>
-                0 = no delay. Higher = smoother, more lag.
+                0 = no delay. Higher = smoother (decode + buffer), more lag.
               </div>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, fontFamily: "'DM Mono'", fontSize: 11, color: '#999' }}>
                 <input
