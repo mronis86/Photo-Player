@@ -83,6 +83,17 @@ async function sendCommand(code, payload) {
   } else {
     entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
   }
+  // Also push to WebSocket clients (e.g. local controller) so commands work when Realtime doesn't deliver to localhost
+  if (entry.wsClients && entry.wsClients.size > 0) {
+    const msg = JSON.stringify({ type: 'command', payload });
+    entry.wsClients.forEach((ws) => {
+      if (ws.readyState === 1) {
+        try {
+          ws.send(msg);
+        } catch (_) {}
+      }
+    });
+  }
 }
 
 const app = express();

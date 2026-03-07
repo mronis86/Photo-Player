@@ -433,6 +433,8 @@ export function Controller() {
   const companionGoToCueRef = useRef<((index: number) => void) | null>(null);
   const companionClearRef = useRef<(() => void) | null>(null);
   const companionFadeRef = useRef<((to: 'black' | 'transparent') => void) | null>(null);
+  /** Shared executor for Companion commands (Realtime + Railway WebSocket). */
+  const companionExecuteCommandRef = useRef<((cmd: CompanionCommandPayload) => void) | null>(null);
   const dualMonitorsRef = useRef<HTMLDivElement | null>(null);
   const pvwSplitRef = useRef(pvwSplit);
   const playStartTimeRef = useRef(0);
@@ -612,16 +614,7 @@ export function Controller() {
     if (!code) return;
     const { unsubscribe } = joinCompanionChannelAsController(
       code,
-      (cmd: CompanionCommandPayload) => {
-        const cmdStr = cmd.type === 'cue' ? `cue ${cmd.cueIndex}` : cmd.type === 'fade' ? `fade ${cmd.fadeTo}` : cmd.type;
-        console.log('[Companion] Command received:', cmdStr);
-        if (cmd.type === 'take') companionTakeRef.current?.();
-        else if (cmd.type === 'next') companionNextRef.current?.();
-        else if (cmd.type === 'prev') companionPrevRef.current?.();
-        else if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
-        else if (cmd.type === 'clear') companionClearRef.current?.();
-        else if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
-      },
+      (cmd: CompanionCommandPayload) => companionExecuteCommandRef.current?.(cmd),
       {
         onRequestState: () => {
           const payload = companionStateRef.current;
@@ -667,13 +660,52 @@ export function Controller() {
   if (!companionApiUrlLoggedRef.current && companionCodeForSession) {
     companionApiUrlLoggedRef.current = true;
     if (companionApiUrl) {
-      console.log('[Companion] State → local API → Supabase + POST to Railway:', companionApiUrl);
+      console.log('[Companion] State → local API → Supabase + POST to Railway. Commands → Railway WebSocket:', companionApiUrl);
     } else {
       console.log(
         '[Companion] State → local API → Supabase table. Railway reads from table (GET /state) so the module should show cues. Optional: set VITE_COMPANION_API_URL in .env to also POST to Railway.'
       );
     }
   }
+
+  // When companionApiUrl is set, connect to Railway WebSocket to receive commands (fixes localhost not getting Realtime broadcasts).
+  useEffect(() => {
+    if (!companionApiUrl || !companionCodeForSession) return;
+    const code = companionCodeForSession;
+    const wsUrl = companionApiUrl.replace(/^http/, 'ws');
+    let ws: WebSocket | null = null;
+    const connect = () => {
+      try {
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+          ws?.send(JSON.stringify({ type: 'register', code }));
+          console.log('[Companion] WebSocket connected to Railway, registered code:', code);
+        };
+        ws.onmessage = (event) => {
+          try {
+            const data = typeof event.data === 'string' ? JSON.parse(event.data) : JSON.parse(event.data?.toString?.() || '{}');
+            if (data?.type === 'command' && data.payload) {
+              companionExecuteCommandRef.current?.(data.payload as CompanionCommandPayload);
+            }
+          } catch (_) {}
+        };
+        ws.onclose = () => {
+          ws = null;
+          setTimeout(connect, 5000);
+        };
+        ws.onerror = () => {};
+      } catch (e) {
+        setTimeout(connect, 5000);
+      }
+    };
+    connect();
+    return () => {
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
+    };
+  }, [companionApiUrl, companionCodeForSession]);
 
   // Send to Companion only when state actually changes. Prefer HTTP POST to Railway when VITE_COMPANION_API_URL is set.
   const companionLastSentRef = useRef<{ liveIndex: number; nextIndex: number; isLive: boolean; playoutConnected: boolean; cuesLength: number; cueIdsKey: string; arrowKey: string } | null>(null);
@@ -1361,6 +1393,16 @@ export function Controller() {
     companionGoToCueRef.current = handleGoToCueIndex;
     companionClearRef.current = handleCompanionClear;
     companionFadeRef.current = handleCompanionFade;
+    companionExecuteCommandRef.current = (cmd: CompanionCommandPayload) => {
+      const cmdStr = cmd.type === 'cue' ? `cue ${cmd.cueIndex}` : cmd.type === 'fade' ? `fade ${cmd.fadeTo}` : cmd.type;
+      console.log('[Companion] Command received:', cmdStr);
+      if (cmd.type === 'take') companionTakeRef.current?.();
+      else if (cmd.type === 'next') companionNextRef.current?.();
+      else if (cmd.type === 'prev') companionPrevRef.current?.();
+      else if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
+      else if (cmd.type === 'clear') companionClearRef.current?.();
+      else if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
+    };
   }, [handleTakeToProgram, handleSelectPrevNext, handleGoToCueIndex, handleCompanionClear, handleCompanionFade]);
 
   const moveCueInSection = useCallback((sectionId: string, cueId: string, direction: -1 | 1) => {

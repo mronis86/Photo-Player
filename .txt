@@ -28,7 +28,7 @@ npm run companion
 # No Supabase "allowed origins" needed for local: the local server proxies companion state (dev 5173→3001 or build on 3000/3001).
 # Optional: set VITE_COMPANION_API_URL in .env to your Railway URL, then rebuild; controller will also POST to Railway.
 # Use the same connection code in the controller as in the Companion module config.
-# If Companion can't control the local app: redeploy the Companion service (companion/mount.js) to Railway so it uses httpSend for commands.
+# For the LOCAL app to receive Companion commands (Take/Next/Prev): set VITE_COMPANION_API_URL in .env to your Railway URL, restart dev (or set localStorage.companionApiUrl and reload). The app will connect to Railway via WebSocket and receive commands (Realtime from localhost often doesn't deliver). Redeploy Companion to Railway after mount.js changes.
 
 ---- GITHUB ----
 git status
