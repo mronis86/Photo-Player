@@ -31,7 +31,10 @@ export const CONNECTED_CHECK_INTERVAL_MS = 3_000;
 let channel: BroadcastChannel | null = null;
 
 /** Realtime channel used by controller to receive connect/heartbeat and send commands. */
-let realtimeChannelRef: { send: (payload: object) => void } | null = null;
+let realtimeChannelRef: {
+  send: (payload: object) => void;
+  httpSend?: (event: string, payload: unknown) => Promise<unknown>;
+} | null = null;
 
 function getRealtimeChannelName(code: string): string {
   return `playout:${String(code).trim().toUpperCase()}`;
@@ -51,7 +54,11 @@ export function sendToPlayout(message: PlayoutMessage, playoutWindow: Window | n
     playoutWindow.postMessage(message, '*');
   }
   if (realtimeChannelRef) {
-    realtimeChannelRef.send({ type: 'broadcast', event: REALTIME_EVENT, payload: message });
+    if (typeof realtimeChannelRef.httpSend === 'function') {
+      void realtimeChannelRef.httpSend(REALTIME_EVENT, message).catch(() => {});
+    } else {
+      realtimeChannelRef.send({ type: 'broadcast', event: REALTIME_EVENT, payload: message });
+    }
   }
 }
 
@@ -166,17 +173,28 @@ export function connectToPlayoutChannelAsPlayout(
   (channel as any).on('broadcast', { event: REALTIME_EVENT }, (p: { payload?: unknown }) => {
     onMessage((p.payload ?? {}) as PlayoutMessage);
   });
+  const sendViaChannel = (msg: PlayoutMessage) => {
+    if (typeof (channel as { httpSend?: (e: string, p: unknown) => Promise<unknown> }).httpSend === 'function') {
+      void (channel as { httpSend: (e: string, p: unknown) => Promise<unknown> })
+        .httpSend(REALTIME_EVENT, msg)
+        .catch(() => {});
+    } else {
+      channel.send({ type: 'broadcast', event: REALTIME_EVENT, payload: msg });
+    }
+  };
   return new Promise((resolve, reject) => {
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
-        channel.send({
-          type: 'broadcast',
-          event: REALTIME_EVENT,
-          payload: { type: 'connect', code: code.trim().toUpperCase() },
-        });
+        const connectPayload = { type: 'connect', code: code.trim().toUpperCase() };
+        if (typeof (channel as { httpSend?: (e: string, p: unknown) => Promise<unknown> }).httpSend === 'function') {
+          void (channel as { httpSend: (e: string, p: unknown) => Promise<unknown> })
+            .httpSend(REALTIME_EVENT, connectPayload)
+            .catch(() => {});
+        } else {
+          channel.send({ type: 'broadcast', event: REALTIME_EVENT, payload: connectPayload });
+        }
         resolve({
-          send: (msg: PlayoutMessage) =>
-            channel.send({ type: 'broadcast', event: REALTIME_EVENT, payload: msg }),
+          send: sendViaChannel,
           unsubscribe: () => {
             void supabase.removeChannel(channel);
           },

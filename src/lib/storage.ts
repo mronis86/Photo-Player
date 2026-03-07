@@ -83,12 +83,33 @@ export async function uploadCueImage(file: File, userId: string, cueId: string):
   if (error) throw error;
 
   const originalName = file.name?.trim() || path.replace(/^.*\//, '').replace(/\.[^.]+$/, '') || 'image';
-  await supabase.from('storage_file_meta').upsert(
+  const { error: metaError } = await supabase.from('storage_file_meta').upsert(
     { user_id: userId, path, original_name: originalName },
     { onConflict: 'user_id,path' }
   );
+  if (metaError) {
+    // RLS may block upsert (e.g. missing UPDATE policy). Image is already in bucket; save can still use path.
+    console.warn('[storage] storage_file_meta upsert failed (run migration 009 for UPDATE policy):', metaError.message);
+  }
 
   return path;
+}
+
+/** Convert local cue src (data URL or blob URL) to a File for upload. */
+async function localSrcToFile(src: string, cueId: string): Promise<File> {
+  const res = await fetch(src);
+  const blob = await res.blob();
+  const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/gif' ? 'gif' : blob.type === 'image/webp' ? 'webp' : 'jpg';
+  return new File([blob], `${cueId}.${ext}`, { type: blob.type });
+}
+
+/**
+ * Upload a local cue image (data URL or blob URL) to the user's cloud cues folder.
+ * Returns the relative path to store in cue.src (e.g. "cues/abc.jpg"). Use when saving a project so the table stores paths, not huge data URLs.
+ */
+export async function uploadCueImageFromLocalSrc(src: string, userId: string, cueId: string): Promise<string> {
+  const file = await localSrcToFile(src, cueId);
+  return uploadCueImage(file, userId, cueId);
 }
 
 /**

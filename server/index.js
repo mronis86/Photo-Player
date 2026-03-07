@@ -15,7 +15,8 @@ import { imageSize } from 'image-size';
 import { InferenceClient } from '@huggingface/inference';
 
 const app = express();
-app.use(express.json({ limit: '20mb' }));
+// 20mb for temp-asset images; 50mb for project save (cues can contain data URLs when stored locally)
+app.use(express.json({ limit: '50mb' }));
 
 // In-memory temp assets for local/hybrid playout (same network). Keyed by id, TTL 1 hour.
 const TEMP_ASSET_TTL_MS = 60 * 60 * 1000;
@@ -101,14 +102,14 @@ function getUserIdFromToken(token) {
   }
 }
 
-function supabaseFetch(path, { method = 'GET', body, token }) {
+function supabaseFetch(path, { method = 'GET', body, token, prefer = 'return=representation' }) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
     return Promise.reject(new Error('Supabase not configured on server (set SUPABASE_URL and SUPABASE_ANON_KEY)'));
   }
   const headers = {
     'Content-Type': 'application/json',
     apikey: SUPABASE_ANON_KEY,
-    Prefer: 'return=representation',
+    Prefer: prefer,
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   return fetch(`${SUPABASE_URL}/rest/v1${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
@@ -169,6 +170,7 @@ app.post('/api/projects/save', async (req, res) => {
       method: 'POST',
       body: row,
       token,
+      prefer: 'return=representation, resolution=merge-duplicates',
     });
     const data = await r.json();
     if (!r.ok) {
@@ -196,6 +198,41 @@ app.delete('/api/projects/:id', async (req, res) => {
   } catch (e) {
     console.warn('[projects] delete error', e.message);
     return res.status(500).json({ error: e.message || 'Delete failed' });
+  }
+});
+
+// Companion state proxy: browser POSTs here (same-origin when using local server); we write to Supabase.
+// Avoids CORS — no need for Supabase "allowed origins" when running locally (dev or local server on 3001/3000).
+app.post('/api/companion-state', async (req, res) => {
+  const { connection_code: code, state: statePayload } = req.body || {};
+  if (!code || typeof code !== 'string' || !statePayload) {
+    return res.status(400).json({ error: 'Missing connection_code or state' });
+  }
+  const connection_code = String(code).trim().toUpperCase();
+  if (!connection_code) return res.status(400).json({ error: 'Invalid connection_code' });
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/companion_state`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+        Prefer: 'resolution=merge-duplicates,return=representation',
+      },
+      body: JSON.stringify({
+        connection_code,
+        state: statePayload,
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      console.warn('[companion-state] Supabase error', r.status, data);
+      return res.status(r.status).json(data || { error: 'Companion state save failed' });
+    }
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    console.warn('[companion-state] error', e.message);
+    return res.status(500).json({ error: e.message || 'Companion state save failed' });
   }
 });
 
@@ -408,7 +445,8 @@ if (isProduction && distDir) {
   console.log('Serving static from dist (production)');
 }
 
-const port = Number(process.env.PORT) || 3001;
+// In dev, always use 3001 so Vite proxy (/api → localhost:3001) works for project save. Production (bat/Railway) uses PORT (e.g. 3000).
+const port = process.env.NODE_ENV === 'production' ? (Number(process.env.PORT) || 3001) : 3001;
 app.listen(port, () => {
   const status = token ? 'on' : 'off';
   console.log('Frameflow listening on port ' + port + ' (analysis: ' + status + ')');

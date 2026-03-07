@@ -8,8 +8,9 @@ import { DEFAULT_MODE_OPTS, DEFAULT_CAPTION_STYLE } from '../../lib/types';
 import { getCueHoldDuration, getCueEOC, getCueFadeIn, getCueFadeOut, getCueModeOpts, getCueCaptionStyle, kbPointToXYZ, xyzToKbPoint, getCueStartXYZ, getCueEndXYZ, getKBScaleVar, getWipeClipPath, getCustomKBTransformFromXYZ } from '../../lib/controllerHelpers';
 import { runImageAnalysis } from '../../lib/imageAnalysis';
 import { listProjects, loadProject, saveProject, deleteProject, type ProjectRow } from '../../lib/projects';
-import { uploadCueImage, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
+import { uploadCueImage, uploadCueImageFromLocalSrc, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
 import { isLocalCueSrc } from '../../lib/tempAsset';
+import { isLocalRef, getLocalCueIdFromRef, toLocalRef, setLocalCueData, getLocalCueData, blobUrlToDataUrl } from '../../lib/localCueStorage';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
 import { MonitorLayer } from './MonitorLayer';
@@ -382,6 +383,8 @@ export function Controller() {
   const [cloudFiles, setCloudFiles] = useState<CloudCueFile[]>([]);
   const [cloudFilesLoading, setCloudFilesLoading] = useState(false);
   const [cloudSelected, setCloudSelected] = useState<Set<string>>(new Set());
+  const [localCueToastDismissed, setLocalCueToastDismissed] = useState(false);
+  const [pushingCueId, setPushingCueId] = useState<string | null>(null);
   const [useAiAnalysis, setUseAiAnalysis] = useState(() => {
     try {
       const v = localStorage.getItem('frameflow-useAiAnalysis');
@@ -441,7 +444,6 @@ export function Controller() {
   const takeOnNextPreviewRef = useRef(false);
   /** Preloaded resolved URL for current preview cue so Take can send instantly (Option 1: Railway responsiveness). */
   const preloadedUrlRef = useRef<{ cueId: string; src: string; url: string; isLocal: boolean } | null>(null);
-  const heartbeatCorsHintLoggedRef = useRef(false);
   const cuesRef = useRef(cues);
   /** Serialized project state at last save/load/new; used to detect unsaved changes. */
   const lastSavedSnapshotRef = useRef<string | null>(null);
@@ -614,11 +616,11 @@ export function Controller() {
         const cmdStr = cmd.type === 'cue' ? `cue ${cmd.cueIndex}` : cmd.type === 'fade' ? `fade ${cmd.fadeTo}` : cmd.type;
         console.log('[Companion] Command received:', cmdStr);
         if (cmd.type === 'take') companionTakeRef.current?.();
-        if (cmd.type === 'next') companionNextRef.current?.();
-        if (cmd.type === 'prev') companionPrevRef.current?.();
-        if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
-        if (cmd.type === 'clear') companionClearRef.current?.();
-        if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
+        else if (cmd.type === 'next') companionNextRef.current?.();
+        else if (cmd.type === 'prev') companionPrevRef.current?.();
+        else if (cmd.type === 'cue' && typeof cmd.cueIndex === 'number') companionGoToCueRef.current?.(cmd.cueIndex);
+        else if (cmd.type === 'clear') companionClearRef.current?.();
+        else if (cmd.type === 'fade') companionFadeRef.current?.(cmd.fadeTo ?? 'black');
       },
       {
         onRequestState: () => {
@@ -660,15 +662,15 @@ export function Controller() {
     return raw.replace(/\/+$/, '');
   })();
 
-  // One-time log so you can see whether HTTP or Realtime is used
+  // One-time log so you can see how state reaches Railway
   const companionApiUrlLoggedRef = useRef(false);
   if (!companionApiUrlLoggedRef.current && companionCodeForSession) {
     companionApiUrlLoggedRef.current = true;
     if (companionApiUrl) {
-      console.log('[Companion] Using Railway HTTP:', companionApiUrl, '– state will POST to API (cues should appear in module)');
+      console.log('[Companion] State → local API → Supabase + POST to Railway:', companionApiUrl);
     } else {
-      console.warn(
-        '[Companion] Using Realtime only – Railway will show hasState=false. To use HTTP: set VITE_COMPANION_API_URL in .env and restart dev server, OR in the console run: localStorage.setItem("companionApiUrl","https://photo-player-production.up.railway.app"); location.reload();'
+      console.log(
+        '[Companion] State → local API → Supabase table. Railway reads from table (GET /state) so the module should show cues. Optional: set VITE_COMPANION_API_URL in .env to also POST to Railway.'
       );
     }
   }
@@ -731,25 +733,50 @@ export function Controller() {
     const code = companionCodeForSession;
     if (!code) return;
 
-    // Always persist to Supabase table so Railway/Companion can read via GET /state.
-    if (supabase) {
-      void supabase
-        .from('companion_state')
-        .upsert(
-          { connection_code: code, state: payload, updated_at: new Date().toISOString() },
-          { onConflict: 'connection_code' }
-        )
-        .then(
-          ({ error }) => {
-            if (error) {
-              console.error('[Companion] companion_state upsert failed –', error.message, '| Code:', code, '| Cues:', cuesSummary.length, '| Check RLS: allow authenticated to insert/update (migration 008).');
-            } else {
-              console.log('[Companion] companion_state saved, code:', code, 'cues:', cuesSummary.length);
-            }
-          },
-          (err) => console.error('[Companion] companion_state upsert error', err)
-        );
-    }
+    // Persist to Supabase so Railway/Companion can read via GET /state.
+    // When using local server (dev 5173→3001 or local build on 3000/3001), POST to /api/companion-state (no CORS).
+    // On Netlify there is no /api, so we fall back to direct Supabase from the browser.
+    const persistCompanionState = () => {
+      fetch('/api/companion-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection_code: code, state: payload }),
+      })
+        .then((r) => {
+          if (r.ok) {
+            console.log('[Companion] companion_state saved (via local API), code:', code, 'cues:', cuesSummary.length);
+            return;
+          }
+          // 404 = no local API (e.g. Netlify); fall back to direct Supabase
+          if (supabase) {
+            return supabase
+              .from('companion_state')
+              .upsert(
+                { connection_code: code, state: payload, updated_at: new Date().toISOString() },
+                { onConflict: 'connection_code' }
+              )
+              .then(({ error }) => {
+                if (error) console.error('[Companion] companion_state upsert failed –', error.message);
+                else console.log('[Companion] companion_state saved (Supabase), code:', code, 'cues:', cuesSummary.length);
+              });
+          }
+        })
+        .catch(() => {
+          if (supabase) {
+            supabase
+              .from('companion_state')
+              .upsert(
+                { connection_code: code, state: payload, updated_at: new Date().toISOString() },
+                { onConflict: 'connection_code' }
+              )
+              .then(({ error }) => {
+                if (error) console.error('[Companion] companion_state upsert failed –', error.message);
+                else console.log('[Companion] companion_state saved (Supabase fallback), code:', code);
+              });
+          }
+        });
+    };
+    persistCompanionState();
 
     if (companionApiUrl) {
       fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
@@ -780,32 +807,32 @@ export function Controller() {
     const id = setInterval(() => {
       const payload = companionStateRef.current;
       if (!payload) return;
-      if (supabase) {
-        void supabase
-          .from('companion_state')
-          .upsert(
-            { connection_code: code, state: payload, updated_at: new Date().toISOString() },
-            { onConflict: 'connection_code' }
-          )
-          .then(
-            ({ error }) => {
-              if (error) {
-                console.warn('[Companion] heartbeat companion_state failed', error.message);
-                if (!heartbeatCorsHintLoggedRef.current && /failed to fetch|network|cors/i.test(String(error.message))) {
-                  heartbeatCorsHintLoggedRef.current = true;
-                  console.warn('[Companion] From localhost, add http://localhost:5173 to Supabase → Project Settings → API → Allowed origins. See docs/local-dev.md.');
-                }
-              }
-            },
-            (err) => {
-              const msg = err?.message ?? String(err);
-              if (!heartbeatCorsHintLoggedRef.current && /failed to fetch|network|cors/i.test(msg)) {
-                heartbeatCorsHintLoggedRef.current = true;
-                console.warn('[Companion] Request blocked (CORS/network). Add http://localhost:5173 to Supabase → Project Settings → API → Allowed origins. See docs/local-dev.md.');
-              }
-            }
-          );
-      }
+      // Same as main effect: try /api/companion-state first (local server), then Supabase (Netlify).
+      fetch('/api/companion-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connection_code: code, state: payload }),
+      })
+        .then((r) => {
+          if (!r.ok && supabase) {
+            void supabase
+              .from('companion_state')
+              .upsert(
+                { connection_code: code, state: payload, updated_at: new Date().toISOString() },
+                { onConflict: 'connection_code' }
+              );
+          }
+        })
+        .catch(() => {
+          if (supabase) {
+            void supabase
+              .from('companion_state')
+              .upsert(
+                { connection_code: code, state: payload, updated_at: new Date().toISOString() },
+                { onConflict: 'connection_code' }
+              );
+          }
+        });
       if (companionApiUrl) {
         fetch(`${companionApiUrl}/state?code=${encodeURIComponent(code)}`, {
           method: 'POST',
@@ -818,7 +845,7 @@ export function Controller() {
       }
     }, intervalMs);
     return () => clearInterval(id);
-  }, [companionCodeForSession, companionApiUrl]);
+  }, [companionCodeForSession, companionApiUrl, supabase]);
 
   useEffect(() => {
     try {
@@ -1502,6 +1529,40 @@ export function Controller() {
     setDeleteCueModal(null);
   };
 
+  const handlePushCueToCloud = async (cue: Cue) => {
+    if (!user?.id) return;
+    let src = cue.src;
+    if (isLocalRef(cue.src)) {
+      const cueId = getLocalCueIdFromRef(cue.src);
+      const dataUrl = cueId ? await getLocalCueData(cueId) : null;
+      if (!dataUrl) {
+        setProjectSaveError('Local image data not found. Save the project first.');
+        return;
+      }
+      src = dataUrl;
+    } else if (!isLocalCueSrc(cue.src) || isCloudStoredCue(cue.src)) return;
+    setPushingCueId(cue.id);
+    try {
+      const path = await uploadCueImageFromLocalSrc(src, user.id, cue.id);
+      setCues((p) => p.map((c) => (c.id === cue.id ? { ...c, src: path } : c)));
+    } catch (e) {
+      setProjectSaveError(e instanceof Error ? e.message : 'Failed to push to cloud');
+    } finally {
+      setPushingCueId(null);
+    }
+  };
+
+  const handleDeleteFromCloudStorage = async (path: string) => {
+    if (!user?.id) return;
+    try {
+      await deleteCueImage(user.id, path);
+      setCloudFiles((prev) => prev.filter((f) => f.path !== path));
+      setCloudSelected((prev) => { const s = new Set(prev); s.delete(path); return s; });
+    } catch (e) {
+      setProjectSaveError(e instanceof Error ? e.message : 'Failed to delete from cloud');
+    }
+  };
+
   const handleOpenCloudBrowser = () => {
     if (!user?.id) return;
     setCloudBrowserOpen(true);
@@ -1571,7 +1632,18 @@ export function Controller() {
     setProjectSaveError(null);
     setProjectSaving(true);
     try {
-      const { id, companionCode } = await saveProject(currentProjectId, currentProjectName, { cues, sections });
+      // Keep payload small: store local image data in IndexedDB (browser only), save only "local:<cueId>" in the project.
+      const cuesToSave = await Promise.all(
+        cues.map(async (cue) => {
+          if (isLocalCueSrc(cue.src)) {
+            const dataUrl = cue.src.trim().startsWith('blob:') ? await blobUrlToDataUrl(cue.src) : cue.src;
+            await setLocalCueData(cue.id, dataUrl);
+            return { ...cue, src: toLocalRef(cue.id) };
+          }
+          return cue;
+        })
+      );
+      const { id, companionCode } = await saveProject(currentProjectId, currentProjectName, { cues: cuesToSave, sections });
       lastSavedSnapshotRef.current = JSON.stringify({ projectId: id, projectName: currentProjectName, cues, sections });
       setCurrentProjectId(id);
       if (companionCode) setCurrentProjectCompanionCode(companionCode);
@@ -1609,19 +1681,30 @@ export function Controller() {
     setProjectLoadingId(id);
     try {
       const payload = await loadProject(id);
-      setCues(payload.cues);
-      setSections(payload.sections);
       const name = projectList.find((p) => p.id === id)?.name ?? '';
       setCurrentProjectId(id);
       setCurrentProjectName(name);
       setCurrentProjectCompanionCode(payload.companionCode || null);
+      setSections(payload.sections);
       setProgramCueItemIdx(-1);
+      // Resolve "local:<cueId>" from IndexedDB so we have data URLs in state (same device). Other device = no data, cue stays as local:id.
+      const cuesResolved = await Promise.all(
+        payload.cues.map(async (cue: Cue) => {
+          if (isLocalRef(cue.src)) {
+            const cueId = getLocalCueIdFromRef(cue.src);
+            const dataUrl = cueId ? await getLocalCueData(cueId) : null;
+            if (dataUrl) return { ...cue, src: dataUrl };
+          }
+          return cue;
+        })
+      );
+      setCues(cuesResolved);
       const firstId = getFlatCueIds(payload.sections)[0] ?? null;
       setPreviewCueId(firstId);
       lastSavedSnapshotRef.current = JSON.stringify({
         projectId: id,
         projectName: name,
-        cues: payload.cues,
+        cues: cuesResolved,
         sections: payload.sections,
       });
     } catch (e) {
@@ -1702,7 +1785,14 @@ export function Controller() {
         </div>
       </header>
 
-      <div className="main">
+      {cues.some((c) => isLocalCueSrc(c.src) || isLocalRef(c.src)) && !localCueToastDismissed && (
+        <div className="local-cue-toast" role="status">
+          <span>Local files will only play via the local server app. Push to cloud (☁ on a cue) to play from Netlify or other devices.</span>
+          <button type="button" className="local-cue-toast-dismiss" onClick={() => setLocalCueToastDismissed(true)} aria-label="Dismiss">✕</button>
+        </div>
+      )}
+
+      <div className={`main ${cues.some((c) => isLocalCueSrc(c.src) || isLocalRef(c.src)) && !localCueToastDismissed ? 'main-with-toast' : ''}`}>
         {/* LEFT: CUE LIST */}
         <div className="panel panel-left">
           <div className="sec">
@@ -1929,9 +2019,27 @@ export function Controller() {
                                     </span>
                                     {cue.jumpToNext && <span className="cue-meta-icon cue-jump-icon" title="Jump to next at end">⏭</span>}
                                     {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud">☁</span>}
+                                    {(isLocalCueSrc(cue.src) || isLocalRef(cue.src)) && (
+                                      <span className="cue-mode-badge cue-local-badge-meta" title="Local (this device only)">
+                                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="cue-local-icon-svg">
+                                          <path fillRule="evenodd" clipRule="evenodd" d="M19 8.36864V9.8C19 12.2513 19 13.477 18.1799 14.2385C17.3598 15 16.0399 15 13.4 15H12.75V18C12.75 18.0479 12.7455 18.0947 12.7369 18.1401C13.2444 18.3414 13.6499 18.7443 13.8546 19.25H14H21.25C21.6642 19.25 22 19.5858 22 20C22 20.4142 21.6642 20.75 21.25 20.75H14H13.8546C13.5579 21.483 12.8394 22 12 22C11.1607 22 10.4421 21.483 10.1454 20.75H10H2.75C2.33579 20.75 2 20.4142 2 20C2 19.5858 2.33579 19.25 2.75 19.25H10H10.1454C10.3501 18.7443 10.7556 18.3414 11.2631 18.1401C11.2545 18.0947 11.25 18.0479 11.25 18V15H10.6C7.96015 15 6.64022 15 5.82012 14.2385C5.00002 13.477 5.00002 12.2513 5.00002 9.8V5.21734C5.00002 4.64369 5.00002 4.35687 5.04856 4.11795C5.26227 3.0662 6.14824 2.24352 7.28089 2.04508C7.53818 2 7.84707 2 8.46484 2C8.73552 2 8.87085 2 9.00092 2.01129C9.56167 2.05999 10.0936 2.26457 10.5272 2.59833C10.6277 2.67575 10.7234 2.76461 10.9148 2.94234L11.3 3.3C11.8711 3.83026 12.1566 4.09538 12.4985 4.27203C12.6863 4.36906 12.8856 4.44569 13.0923 4.5004C13.4685 4.6 13.8723 4.6 14.6799 4.6H14.9415C16.7841 4.6 17.7055 4.6 18.3043 5.10015C18.3594 5.14616 18.4118 5.19484 18.4614 5.24599C19 5.80208 19 6.6576 19 8.36864ZM12.75 7.5C12.75 7.08579 13.0858 6.75 13.5 6.75H16.5C16.9142 6.75 17.25 7.08579 17.25 7.5C17.25 7.91421 16.9142 8.25 16.5 8.25H13.5C13.0858 8.25 12.75 7.91421 12.75 7.5Z" fill="currentColor" />
+                                        </svg>
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
                                 <div className="cue-actions">
+                                  {(isLocalCueSrc(cue.src) || isLocalRef(cue.src)) && user && (
+                                    <button
+                                      type="button"
+                                      className="cue-act-btn"
+                                      disabled={pushingCueId === cue.id}
+                                      onClick={(e) => { e.stopPropagation(); void handlePushCueToCloud(cue); }}
+                                      title="Push to cloud so it plays from Netlify and other devices"
+                                    >
+                                      {pushingCueId === cue.id ? '…' : '☁'}
+                                    </button>
+                                  )}
                                   <button type="button" className={`cue-act-btn ${cue.jumpToNext ? 'on-b' : ''}`} onClick={(e) => { e.stopPropagation(); setCues((prev) => prev.map((c) => c.id === cue.id ? { ...c, jumpToNext: !c.jumpToNext } : c)); }} title="At end: auto load next to preview and take">⏭</button>
                                   <button type="button" className="cue-act-btn cue-act-rename" onClick={(e) => { e.stopPropagation(); setRenameCueModal(cue); }} title="Custom name in cue list">⚙</button>
                                   <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); setDeleteCueModal({ cue }); }}>✕</button>
@@ -3003,15 +3111,25 @@ export function Controller() {
                 <>
                   <div className="cloud-browser-grid">
                     {cloudFiles.map((file) => (
-                      <button
-                        key={file.path}
-                        type="button"
-                        className={`cloud-browser-item ${cloudSelected.has(file.path) ? 'selected' : ''}`}
-                        onClick={() => toggleCloudSelected(file.path)}
-                      >
-                        <MediaImg src={file.path} userId={user.id} className="cloud-browser-thumb" alt="" />
-                        <span className="cloud-browser-name">{file.name}</span>
-                      </button>
+                      <div key={file.path} className="cloud-browser-item-wrap">
+                        <button
+                          type="button"
+                          className={`cloud-browser-item ${cloudSelected.has(file.path) ? 'selected' : ''}`}
+                          onClick={() => toggleCloudSelected(file.path)}
+                        >
+                          <MediaImg src={file.path} userId={user.id} className="cloud-browser-thumb" alt="" />
+                          <span className="cloud-browser-name">{file.name}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="cloud-browser-item-delete"
+                          onClick={(e) => { e.stopPropagation(); void handleDeleteFromCloudStorage(file.path); }}
+                          title="Delete from cloud storage"
+                          aria-label={`Delete ${file.name} from cloud`}
+                        >
+                          ✕
+                        </button>
+                      </div>
                     ))}
                   </div>
                   <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>

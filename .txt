@@ -3,7 +3,7 @@ PHOTO PLAYER / FRAMEFLOW – Terminal commands (local, GitHub, Netlify)
 ================================================================================
 
 ---- LOCAL ----
-# Dev: need BOTH server + frontend for save/load
+# Dev: need BOTH server + frontend for save/load (server runs on 3001 so Vite proxy works)
 npm run server
 # (second terminal)
 npm run dev
@@ -20,6 +20,15 @@ npm run preview
 
 # Companion (separate service)
 npm run companion
+
+---- COMPANION + LOCAL SERVER ----
+# Flow: Controller sends state → (local) POST /api/companion-state → server writes to Supabase;
+#       (Netlify) controller writes direct to Supabase. Railway Companion reads from Supabase (GET /state?code=...).
+# Commands (Take/Next/Prev): Companion module → Railway HTTP → Railway broadcasts via Supabase Realtime → controller (local) receives.
+# No Supabase "allowed origins" needed for local: the local server proxies companion state (dev 5173→3001 or build on 3000/3001).
+# Optional: set VITE_COMPANION_API_URL in .env to your Railway URL, then rebuild; controller will also POST to Railway.
+# Use the same connection code in the controller as in the Companion module config.
+# If Companion can't control the local app: redeploy the Companion service (companion/mount.js) to Railway so it uses httpSend for commands.
 
 ---- GITHUB ----
 git status

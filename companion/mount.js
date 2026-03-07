@@ -67,12 +67,22 @@ function getOrCreateChannel(code) {
   return entry;
 }
 
-function sendCommand(code, payload) {
+async function sendCommand(code, payload) {
   const entry = getOrCreateChannel(code);
   if (!entry?.channel) return;
   const cmdStr = payload.type === 'cue' ? `cue ${payload.cueIndex}` : payload.type === 'fade' ? `fade ${payload.fadeTo}` : payload.type;
   console.log(`[Companion API] command code=${code} ${cmdStr}`);
-  entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
+  // Use httpSend so the broadcast reaches the controller even if our Realtime socket isn't ready (e.g. first button press).
+  if (typeof entry.channel.httpSend === 'function') {
+    try {
+      await entry.channel.httpSend(COMPANION_EVENT_CMD, payload);
+    } catch (e) {
+      console.warn('[Companion API] httpSend failed, falling back to send:', e?.message || e);
+      entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
+    }
+  } else {
+    entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
+  }
 }
 
 const app = express();
@@ -183,44 +193,44 @@ app.get('/cues', requireCode, (req, res) => {
   res.json(cues);
 });
 
-app.get('/take', requireCode, (req, res) => {
+app.get('/take', requireCode, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Companion not configured' });
-  sendCommand(req.companionCode, { type: 'take' });
+  await sendCommand(req.companionCode, { type: 'take' });
   res.json({ ok: true, action: 'take' });
 });
 
-app.get('/next', requireCode, (req, res) => {
+app.get('/next', requireCode, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Companion not configured' });
-  sendCommand(req.companionCode, { type: 'next' });
+  await sendCommand(req.companionCode, { type: 'next' });
   res.json({ ok: true, action: 'next' });
 });
 
-app.get('/prev', requireCode, (req, res) => {
+app.get('/prev', requireCode, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Companion not configured' });
-  sendCommand(req.companionCode, { type: 'prev' });
+  await sendCommand(req.companionCode, { type: 'prev' });
   res.json({ ok: true, action: 'prev' });
 });
 
-app.get('/cue/:index', requireCode, (req, res) => {
+app.get('/cue/:index', requireCode, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Companion not configured' });
   const index = parseInt(req.params.index, 10);
   if (!Number.isFinite(index) || index < 0) {
     return res.status(400).json({ error: 'Invalid cue index' });
   }
-  sendCommand(req.companionCode, { type: 'cue', cueIndex: index });
+  await sendCommand(req.companionCode, { type: 'cue', cueIndex: index });
   res.json({ ok: true, action: 'cue', cueIndex: index });
 });
 
-app.get('/clear', requireCode, (req, res) => {
+app.get('/clear', requireCode, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Companion not configured' });
-  sendCommand(req.companionCode, { type: 'clear' });
+  await sendCommand(req.companionCode, { type: 'clear' });
   res.json({ ok: true, action: 'clear' });
 });
 
-app.get('/fade', requireCode, (req, res) => {
+app.get('/fade', requireCode, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'Companion not configured' });
   const to = (req.query.to || 'black') === 'transparent' ? 'transparent' : 'black';
-  sendCommand(req.companionCode, { type: 'fade', fadeTo: to });
+  await sendCommand(req.companionCode, { type: 'fade', fadeTo: to });
   res.json({ ok: true, action: 'fade', fadeTo: to });
 });
 
