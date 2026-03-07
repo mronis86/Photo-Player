@@ -447,9 +447,28 @@ export function Controller() {
   /** Preloaded resolved URL for current preview cue so Take can send instantly (Option 1: Railway responsiveness). */
   const preloadedUrlRef = useRef<{ cueId: string; src: string; url: string; isLocal: boolean } | null>(null);
   const cuesRef = useRef(cues);
-  /** Serialized project state at last save/load/new; used to detect unsaved changes. */
+  /** Serialized project state at last save/load/new; used for "new project has content" only. */
   const lastSavedSnapshotRef = useRef<string | null>(null);
   const [saveSyncedTick, setSaveSyncedTick] = useState(0);
+  /** Explicit dirty flag: true only after user edits (add/edit/delete cue, sections, name). Transport (prev/next/take) never sets this. */
+  const [projectDirty, setProjectDirty] = useState(false);
+  const isLoadingProjectRef = useRef(false);
+  const prevProjectLoadingIdRef = useRef<string | null>(null);
+  const markProjectDirty = useCallback(() => {
+    if (isLoadingProjectRef.current) return; // Ignore during/just after load so opening a project never shows yellow
+    setProjectDirty(true);
+  }, []);
+
+  // When load finishes (projectLoadingId goes from set → null), force clear dirty after this commit so Save never stays yellow after opening a project
+  useEffect(() => {
+    const prev = prevProjectLoadingIdRef.current;
+    prevProjectLoadingIdRef.current = projectLoadingId;
+    if (prev != null && projectLoadingId === null) {
+      const t = setTimeout(() => setProjectDirty(false), 0);
+      return () => clearTimeout(t);
+    }
+  }, [projectLoadingId]);
+
   const sectionsRef = useRef(sections);
   const settingsRef = useRef({ selectedMode, captionStyle, holdDuration, transitionType, transDuration, dipColor, wipeDirection, fadeInDur, fadeOutDur, endOfCueBehavior, fadeTo, zoomScale, motionSpeed, kbDirection, modeOpts, aspect });
   flatCueIdsRef.current = flatCueIds;
@@ -647,23 +666,28 @@ export function Controller() {
   }, [companionCodeForSession, currentProjectCompanionCode]);
 
   // Companion API URL (Railway): when set, controller POSTs state over HTTP. Env is read at dev-server start; localStorage override works without restart.
+  // Railway URL for state POST + command WebSocket. On localhost, use default if env/localStorage not set (so commands work without restarting dev).
   const companionApiUrl = (() => {
     const fromEnv = import.meta.env?.VITE_COMPANION_API_URL;
     const fromStorage = typeof localStorage !== 'undefined' ? localStorage.getItem('companionApiUrl') : null;
-    const raw = (typeof fromEnv === 'string' && fromEnv.trim() ? fromEnv : fromStorage || '').trim();
+    let raw = (typeof fromEnv === 'string' && fromEnv.trim() ? fromEnv : fromStorage || '').trim();
+    if (!raw && typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+      raw = 'https://photo-player-production.up.railway.app';
+    }
     if (!raw) return '';
     return raw.replace(/\/+$/, '');
   })();
 
-  // One-time log so you can see how state reaches Railway
+  // One-time log so you can see how state/commands reach Railway
   const companionApiUrlLoggedRef = useRef(false);
   if (!companionApiUrlLoggedRef.current && companionCodeForSession) {
     companionApiUrlLoggedRef.current = true;
     if (companionApiUrl) {
-      console.log('[Companion] State → local API → Supabase + POST to Railway. Commands → Railway WebSocket:', companionApiUrl);
+      const fromEnv = typeof import.meta.env?.VITE_COMPANION_API_URL === 'string' && import.meta.env.VITE_COMPANION_API_URL.trim();
+      console.log('[Companion] State → local API → Supabase + POST to Railway. Commands → WebSocket:', companionApiUrl, fromEnv ? '' : '(localhost default; set VITE_COMPANION_API_URL if different)');
     } else {
       console.log(
-        '[Companion] State → local API → Supabase table. Railway reads from table (GET /state) so the module should show cues. Optional: set VITE_COMPANION_API_URL in .env to also POST to Railway.'
+        '[Companion] State → local API → Supabase table. Railway reads from table (GET /state). For commands from Companion, set VITE_COMPANION_API_URL in .env and restart dev, or localStorage.companionApiUrl and reload.'
       );
     }
   }
@@ -993,11 +1017,12 @@ export function Controller() {
   const panelModeOpts = panelCanEditCue ? effectivePreviewModeOpts : modeOpts;
   const panelCaptionStyle = panelCanEditCue ? effectivePreviewCaptionStyle : captionStyle;
   const setPanelMode = useCallback((mode: 'fullscreen' | 'blurbg' | 'split') => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, mode } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, mode } : c))); }
     else setSelectedMode(mode);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelModeOpts = useCallback((update: (prev: ModeOpts) => ModeOpts) => {
     if (previewCueId) {
+      markProjectDirty();
       setCues((prev) => prev.map((c) => {
         if (c.id !== previewCueId) return c;
         const defaults = { splitImgWidth: 55, splitImageSide: 'left' as const, splitCenterWidth: 40, splitCenterHeight: 45, splitTextAlign: 'left' as const, showBorder: false, borderColor: '#ffffff', borderWidth: 2 };
@@ -1008,12 +1033,13 @@ export function Controller() {
         return { ...c, modeOpts: update(base) };
       }));
     } else setModeOpts(update);
-  }, [previewCueId, modeOpts]);
+  }, [previewCueId, modeOpts, markProjectDirty]);
   const setPanelCaptionStyle = useCallback((update: (prev: CaptionStyle) => CaptionStyle) => {
     if (previewCueId) {
+      markProjectDirty();
       setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, captionStyle: update(c.captionStyle ? { ...c.captionStyle } : { ...captionStyle }) } : c)));
     } else setCaptionStyle(update);
-  }, [previewCueId, captionStyle]);
+  }, [previewCueId, captionStyle, markProjectDirty]);
   const panelHoldDuration = panelCanEditCue && previewCue ? getCueHoldDuration(previewCue, holdDuration) : holdDuration;
   const panelFadeInDur = panelCanEditCue && previewCue ? (previewCue.fadeIn != null ? previewCue.fadeIn : fadeInDur) : fadeInDur;
   const panelFadeOutDur = panelCanEditCue && previewCue ? (previewCue.fadeOut != null ? previewCue.fadeOut : fadeOutDur) : fadeOutDur;
@@ -1027,52 +1053,58 @@ export function Controller() {
   const panelDipColor = panelCanEditCue && previewCue ? (previewCue.dipColor ?? dipColor) : dipColor;
   const panelWipeDirection = panelCanEditCue && previewCue ? ((previewCue.wipeDirection as WipeDirection) ?? wipeDirection) : wipeDirection;
   const setPanelHoldDuration = useCallback((v: number) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, holdDuration: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, holdDuration: v } : c))); }
     else setHoldDuration(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelFadeInDur = useCallback((v: number) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, fadeIn: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, fadeIn: v } : c))); }
     else setFadeInDur(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelFadeOutDur = useCallback((v: number) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, fadeOut: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, fadeOut: v } : c))); }
     else setFadeOutDur(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelEndOfCueBehavior = useCallback((v: EndOfCue) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, eoc: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, eoc: v } : c))); }
     else setEndOfCueBehavior(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelZoomScale = useCallback((v: number) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, zoomScale: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, zoomScale: v } : c))); }
     else setZoomScale(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelMotionSpeed = useCallback((v: number) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, motionSpeed: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, motionSpeed: v } : c))); }
     else setMotionSpeed(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelKbDirection = useCallback((v: string) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, kbAnim: v as Cue['kbAnim'] } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, kbAnim: v as Cue['kbAnim'] } : c))); }
     else setKbDirection(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelTransitionType = useCallback((v: TransitionType) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, transitionType: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, transitionType: v } : c))); }
     else setTransitionType(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelTransDuration = useCallback((v: number) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, transDuration: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, transDuration: v } : c))); }
     else setTransDuration(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelDipColor = useCallback((v: string) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, dipColor: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, dipColor: v } : c))); }
     else setDipColor(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
   const setPanelWipeDirection = useCallback((v: WipeDirection) => {
-    if (previewCueId) setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, wipeDirection: v } : c)));
+    if (previewCueId) { markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, wipeDirection: v } : c))); }
     else setWipeDirection(v);
-  }, [previewCueId]);
+  }, [previewCueId, markProjectDirty]);
 
+  // Only fill default KB points when the USER changed the panel to 'custom'. Never run when preview changed (Next/Prev) so transport never mutates cues.
+  const prevKbAndPvwRef = useRef({ kb: panelKbDirection, pvw: previewCueId });
   useEffect(() => {
     if (panelKbDirection !== 'custom' || !previewCueId) return;
+    const prev = prevKbAndPvwRef.current;
+    prevKbAndPvwRef.current = { kb: panelKbDirection, pvw: previewCueId };
+    if (prev.pvw !== previewCueId) return; // Preview changed (Next/Prev) — never mutate
+    if (prev.kb === panelKbDirection) return; // KB didn't change (e.g. initial render) — only run when user switched to custom
     setCues((prev) =>
       prev.map((c) => {
         if (c.id !== previewCueId) return c;
@@ -1406,6 +1438,7 @@ export function Controller() {
   }, [handleTakeToProgram, handleSelectPrevNext, handleGoToCueIndex, handleCompanionClear, handleCompanionFade]);
 
   const moveCueInSection = useCallback((sectionId: string, cueId: string, direction: -1 | 1) => {
+    markProjectDirty();
     setSections((prev) => prev.map((s) => {
       if (s.id !== sectionId) return s;
       const i = s.cueIds.indexOf(cueId);
@@ -1416,17 +1449,18 @@ export function Controller() {
       [next[i], next[j]] = [next[j], next[i]];
       return { ...s, cueIds: next };
     }));
-  }, []);
+  }, [markProjectDirty]);
 
   const moveSection = useCallback((sectionIdx: number, direction: -1 | 1) => {
     const j = sectionIdx + direction;
     if (j < 0 || j >= sections.length) return;
+    markProjectDirty();
     setSections((prev) => {
       const next = [...prev];
       [next[sectionIdx], next[j]] = [next[j], next[sectionIdx]];
       return next;
     });
-  }, [sections.length]);
+  }, [sections.length, markProjectDirty]);
 
   const toggleSectionCollapsed = useCallback((sectionId: string) => {
     setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, collapsed: !s.collapsed } : s)));
@@ -1436,6 +1470,7 @@ export function Controller() {
     const sec = sections.find((s) => s.id === sectionId);
     if (!sec) return;
     if (sec.cueIds.length > 0 && !window.confirm(`Move ${sec.cueIds.length} item(s) to first section and remove "${sec.name}"?`)) return;
+    markProjectDirty();
     setSections((prev) => {
       const rest = prev.filter((s) => s.id !== sectionId);
       const first = rest[0];
@@ -1444,7 +1479,7 @@ export function Controller() {
       }
       return rest;
     });
-  }, [sections]);
+  }, [sections, markProjectDirty]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1481,6 +1516,7 @@ export function Controller() {
         try {
           const path = await uploadCueImage(file, user.id, id);
           const cue: Cue = { id, src: path, name };
+          markProjectDirty();
           setCues((prev) => [...prev, cue]);
           if (sectionId) {
             setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, cueIds: [...s.cueIds, id] } : s)));
@@ -1517,6 +1553,7 @@ export function Controller() {
         const name = file.name.replace(/\.[^.]+$/, '');
         const id = `cue-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         const cue: Cue = { id, src, name };
+        markProjectDirty();
         setCues((prev) => [...prev, cue]);
         if (sectionId) {
           setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, cueIds: [...s.cueIds, id] } : s)));
@@ -1546,11 +1583,13 @@ export function Controller() {
   const addSection = () => {
     const name = window.prompt('Section name:', `Section ${sections.length + 1}`) || `Section ${sections.length + 1}`;
     const id = `sec-${Date.now()}`;
+    markProjectDirty();
     setSections((prev) => [...prev, { id, name, cueIds: [] }]);
   };
 
   const clearCues = () => {
     if (!window.confirm('Clear all cues?')) return;
+    markProjectDirty();
     setCues([]);
     setSections([{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }]);
     setProgramCueItemIdx(-1);
@@ -1565,6 +1604,7 @@ export function Controller() {
     if (isCloud && alsoDeleteFromCloud && user?.id) {
       deleteCueImage(user.id, cue.src).catch((e) => setProjectSaveError(e instanceof Error ? e.message : 'Failed to delete from cloud'));
     }
+    markProjectDirty();
     setCues((p) => p.filter((c) => c.id !== cue.id));
     setSections((p) => p.map((s) => ({ ...s, cueIds: s.cueIds.filter((id) => id !== cue.id) })));
     if (previewCueId === cue.id) setPreviewCueId(null);
@@ -1586,6 +1626,7 @@ export function Controller() {
     setPushingCueId(cue.id);
     try {
       const path = await uploadCueImageFromLocalSrc(src, user.id, cue.id);
+      markProjectDirty();
       setCues((p) => p.map((c) => (c.id === cue.id ? { ...c, src: path } : c)));
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Failed to push to cloud');
@@ -1623,6 +1664,7 @@ export function Controller() {
       const id = `cue-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`;
       return { id, src: file.path, name: file.name, groupId: undefined };
     });
+    markProjectDirty();
     setCues((prev) => [...prev, ...newCues]);
     const firstSectionId = sections[0]?.id;
     if (firstSectionId) {
@@ -1662,13 +1704,34 @@ export function Controller() {
     setProjectSaveError(null);
     setNewProjectModalOpen(false);
     lastSavedSnapshotRef.current = null;
+    setProjectDirty(false);
   };
 
-  const getProjectSnapshot = () =>
-    JSON.stringify({ projectId: currentProjectId, projectName: currentProjectName, cues, sections });
-  const hasUnsavedChanges =
-    (lastSavedSnapshotRef.current != null && lastSavedSnapshotRef.current !== getProjectSnapshot()) ||
-    (lastSavedSnapshotRef.current === null && (cues.length > 0 || currentProjectName !== '' || currentProjectId != null));
+  // Stable stringify so key order never causes false unsaved (e.g. after prev/next).
+  const stableStringify = (value: unknown): string => {
+    if (value === null || typeof value !== 'object') return JSON.stringify(value);
+    if (Array.isArray(value)) return '[' + value.map((v) => stableStringify(v)).join(',') + ']';
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj).sort();
+    const parts = keys.map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k]));
+    return '{' + parts.join(',') + '}';
+  };
+  // Snapshot in "save form" so preview/program/take don't trigger yellow: local cues as local:<id>. Only real edits (cues/sections/name) or new project trigger yellow.
+  const projectSnapshotString = (
+    projectId: string | null,
+    projectName: string,
+    cuesList: Cue[],
+    sectionsList: Section[]
+  ) => {
+    const cuesSaveForm = cuesList.map((c) => ({
+      ...c,
+      src: isLocalCueSrc(c.src) || isLocalRef(c.src) ? toLocalRef(c.id) : c.src,
+    }));
+    return stableStringify({ projectId, projectName, cues: cuesSaveForm, sections: sectionsList });
+  };
+  const getProjectSnapshot = () => projectSnapshotString(currentProjectId, currentProjectName, cues, sections);
+  // Save button yellow ONLY when user edited content (markProjectDirty). Transport (Preview/Next/Take/Clear) never sets dirty — we ignore current/next cue state.
+  const hasUnsavedChanges = projectDirty;
 
   const handleSaveProject = async () => {
     setProjectSaveError(null);
@@ -1686,8 +1749,9 @@ export function Controller() {
         })
       );
       const { id, companionCode } = await saveProject(currentProjectId, currentProjectName, { cues: cuesToSave, sections });
-      lastSavedSnapshotRef.current = JSON.stringify({ projectId: id, projectName: currentProjectName, cues, sections });
+      lastSavedSnapshotRef.current = projectSnapshotString(id, currentProjectName, cues, sections);
       setCurrentProjectId(id);
+      setProjectDirty(false);
       if (companionCode) setCurrentProjectCompanionCode(companionCode);
       setSaveSyncedTick((t) => t + 1);
     } catch (e) {
@@ -1721,6 +1785,8 @@ export function Controller() {
     setProjectListOpen(false);
     setProjectSaveError(null);
     setProjectLoadingId(id);
+    setProjectDirty(false); // Clear immediately so opening a project never shows yellow
+    isLoadingProjectRef.current = true; // Ignore any markProjectDirty during/after load
     try {
       const payload = await loadProject(id);
       const name = projectList.find((p) => p.id === id)?.name ?? '';
@@ -1743,16 +1809,16 @@ export function Controller() {
       setCues(cuesResolved);
       const firstId = getFlatCueIds(payload.sections)[0] ?? null;
       setPreviewCueId(firstId);
-      lastSavedSnapshotRef.current = JSON.stringify({
-        projectId: id,
-        projectName: name,
-        cues: cuesResolved,
-        sections: payload.sections,
-      });
+      lastSavedSnapshotRef.current = projectSnapshotString(id, name, payload.cues, payload.sections);
+      setProjectDirty(false);
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Load failed');
     } finally {
       setProjectLoadingId(null);
+      // Clear loading guard after React has committed state and run effects, so we don't mark dirty from load-triggered effects
+      setTimeout(() => {
+        isLoadingProjectRef.current = false;
+      }, 0);
     }
   };
 
@@ -1829,7 +1895,7 @@ export function Controller() {
 
       {cues.some((c) => isLocalCueSrc(c.src) || isLocalRef(c.src)) && !localCueToastDismissed && (
         <div className="local-cue-toast" role="status">
-          <span>Local files will only play via the local server app. Push to cloud (☁ on a cue) to play from Netlify or other devices.</span>
+          <span>Local files will only play via the local server app. Push to cloud (<span className="toast-cloud-icon" aria-hidden><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></span> on a cue) to play from Netlify or other devices.</span>
           <button type="button" className="local-cue-toast-dismiss" onClick={() => setLocalCueToastDismissed(true)} aria-label="Dismiss">✕</button>
         </div>
       )}
@@ -1971,7 +2037,8 @@ export function Controller() {
                 style={{ marginTop: 8, width: '100%' }}
                 onClick={handleOpenCloudBrowser}
               >
-                ☁ From cloud
+                <svg viewBox="0 0 24 24" fill="currentColor" className="cloud-icon-svg" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+                {' '}From cloud
               </button>
             )}
           </div>
@@ -2060,7 +2127,7 @@ export function Controller() {
                                       {getCueEOC(cue, endOfCueBehavior) === 'hold' ? 'HOLD' : getCueEOC(cue, endOfCueBehavior) === 'fade' ? 'FADE OUT' : 'CLEAR'}
                                     </span>
                                     {cue.jumpToNext && <span className="cue-meta-icon cue-jump-icon" title="Jump to next at end">⏭</span>}
-                                    {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud">☁</span>}
+                                    {isCloudStoredCue(cue.src) && <span className="cue-mode-badge cue-cloud-badge-meta" title="Stored in cloud"><svg viewBox="0 0 24 24" fill="currentColor" className="cloud-icon-svg" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></span>}
                                     {(isLocalCueSrc(cue.src) || isLocalRef(cue.src)) && (
                                       <span className="cue-mode-badge cue-local-badge-meta" title="Local (this device only)">
                                         <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="cue-local-icon-svg">
@@ -2079,10 +2146,10 @@ export function Controller() {
                                       onClick={(e) => { e.stopPropagation(); void handlePushCueToCloud(cue); }}
                                       title="Push to cloud so it plays from Netlify and other devices"
                                     >
-                                      {pushingCueId === cue.id ? '…' : '☁'}
+                                      {pushingCueId === cue.id ? '…' : <svg viewBox="0 0 24 24" fill="currentColor" className="cloud-icon-svg" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>}
                                     </button>
                                   )}
-                                  <button type="button" className={`cue-act-btn ${cue.jumpToNext ? 'on-b' : ''}`} onClick={(e) => { e.stopPropagation(); setCues((prev) => prev.map((c) => c.id === cue.id ? { ...c, jumpToNext: !c.jumpToNext } : c)); }} title="At end: auto load next to preview and take">⏭</button>
+                                  <button type="button" className={`cue-act-btn ${cue.jumpToNext ? 'on-b' : ''}`} onClick={(e) => { e.stopPropagation(); markProjectDirty(); setCues((prev) => prev.map((c) => c.id === cue.id ? { ...c, jumpToNext: !c.jumpToNext } : c)); }} title="At end: auto load next to preview and take">⏭</button>
                                   <button type="button" className="cue-act-btn cue-act-rename" onClick={(e) => { e.stopPropagation(); setRenameCueModal(cue); }} title="Custom name in cue list">⚙</button>
                                   <button type="button" className="cue-act-btn del" onClick={(e) => { e.stopPropagation(); setDeleteCueModal({ cue }); }}>✕</button>
                                 </div>
@@ -2772,7 +2839,7 @@ export function Controller() {
                       if (!previewCueId) return;
                       const cur = which === 'start' ? startXYZ : endXYZ;
                       const next = { ...cur, [axis]: raw };
-                      setCues((prev) => applyXYZ(prev, previewCueId, which, next.cx, next.cy, next.z));
+                      markProjectDirty(); setCues((prev) => applyXYZ(prev, previewCueId, which, next.cx, next.cy, next.z));
                     }
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -2781,16 +2848,16 @@ export function Controller() {
                           <button type="button" className={`kb-pick-btn ${kbEditingFrame === 'end' ? 'active-end' : ''}`} onClick={() => setKbEditingFrame((f) => (f === 'end' ? null : 'end'))}>View End</button>
                         </div>
                         <div className="kb-scale-row">
-                          <button type="button" className={`kb-scale-btn ${customScale === 'fit' ? 'on-b' : ''}`} onClick={() => previewCueId && setCues((prev) => prev.map((c) => {
+                          <button type="button" className={`kb-scale-btn ${customScale === 'fit' ? 'on-b' : ''}`} onClick={() => previewCueId && (markProjectDirty(), setCues((prev) => prev.map((c) => {
                             if (c.id !== previewCueId) return c;
                             const base = getCueModeOpts(c, modeOpts);
                             return { ...c, customPointScale: 'fit' as const, modeOpts: { ...base, fullscreen: { ...base.fullscreen, objectFit: 'contain' as const } } };
-                          }))}>Fit</button>
-                          <button type="button" className={`kb-scale-btn ${customScale === 'fill' ? 'on-b' : ''}`} onClick={() => previewCueId && setCues((prev) => prev.map((c) => {
+                          })))}>Fit</button>
+                          <button type="button" className={`kb-scale-btn ${customScale === 'fill' ? 'on-b' : ''}`} onClick={() => previewCueId && (markProjectDirty(), setCues((prev) => prev.map((c) => {
                             if (c.id !== previewCueId) return c;
                             const base = getCueModeOpts(c, modeOpts);
                             return { ...c, customPointScale: 'fill' as const, modeOpts: { ...base, fullscreen: { ...base.fullscreen, objectFit: 'cover' as const } } };
-                          }))}>Fill</button>
+                          })))}>Fill</button>
                         </div>
                         <ThumbnailOverlay
                           imageSrc={previewCue.src}
@@ -2819,11 +2886,11 @@ export function Controller() {
                           X,Y = center (0–100). Z = zoom (1 = full frame, 2 = 2× zoom). Boxes above are <em>display only</em> — sliders are the source of truth.
                         </div>
                         <div className="kb-point-actions" style={{ display: 'flex', gap: 8 }}>
-                          <button type="button" className="kb-point-btn" style={{ flex: 1 }} onClick={() => setCues((prev) => prev.map((c) => {
+                          <button type="button" className="kb-point-btn" style={{ flex: 1 }} onClick={() => { markProjectDirty(); setCues((prev) => prev.map((c) => {
                             if (c.id !== previewCueId || !c.kbCustomStart || !c.kbCustomEnd) return c;
                             return { ...c, kbCustomStart: c.kbCustomEnd, kbCustomEnd: c.kbCustomStart, kbStartCx: c.kbEndCx, kbStartCy: c.kbEndCy, kbStartZ: c.kbEndZ, kbEndCx: c.kbStartCx, kbEndCy: c.kbStartCy, kbEndZ: c.kbStartZ };
-                          }))}>⇄ Swap</button>
-                          <button type="button" className="kb-point-btn" style={{ flex: 1 }} onClick={() => setCues((prev) => applyXYZ(applyXYZ(prev, previewCueId, 'start', 50, 50, 1), previewCueId, 'end', 50, 50, 2))}>↺ Reset</button>
+                          })); }}>⇄ Swap</button>
+                          <button type="button" className="kb-point-btn" style={{ flex: 1 }} onClick={() => { markProjectDirty(); setCues((prev) => applyXYZ(applyXYZ(prev, previewCueId, 'start', 50, 50, 1), previewCueId, 'end', 50, 50, 2)); }}>↺ Reset</button>
                           <button type="button" className="kb-point-btn" style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }} onClick={() => setPvwPlayKey((k) => k + 1)}>▶ Preview</button>
                         </div>
                       </div>
@@ -2948,7 +3015,7 @@ export function Controller() {
                     value={previewCue?.captionTitle ?? ''}
                     onChange={(e) => {
                       if (!previewCueId) return;
-                      setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, captionTitle: e.target.value } : c)));
+                      markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, captionTitle: e.target.value } : c)));
                     }}
                   />
                 </div>
@@ -2960,7 +3027,7 @@ export function Controller() {
                     value={previewCue?.captionSub ?? ''}
                     onChange={(e) => {
                       if (!previewCueId) return;
-                      setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, captionSub: e.target.value } : c)));
+                      markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, captionSub: e.target.value } : c)));
                     }}
                   />
                 </div>
@@ -2972,7 +3039,7 @@ export function Controller() {
                     value={previewCue?.captionTag ?? ''}
                     onChange={(e) => {
                       if (!previewCueId) return;
-                      setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, captionTag: e.target.value } : c)));
+                      markProjectDirty(); setCues((prev) => prev.map((c) => (c.id === previewCueId ? { ...c, captionTag: e.target.value } : c)));
                     }}
                   />
                 </div>
@@ -3074,15 +3141,15 @@ export function Controller() {
                 className="rename-cue-input"
                 value={renameCueInput}
                 onChange={(e) => setRenameCueInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); const v = renameCueInput.trim(); setCues((prev) => prev.map((c) => c.id === renameCueModal.id ? { ...c, displayName: v || undefined } : c)); setRenameCueModal(null); } }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); const v = renameCueInput.trim(); markProjectDirty(); setCues((prev) => prev.map((c) => c.id === renameCueModal.id ? { ...c, displayName: v || undefined } : c)); setRenameCueModal(null); } }}
                 placeholder={renameCueModal.name}
                 autoFocus
               />
               <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-                <button type="button" className="btn-sm" onClick={() => { const v = renameCueInput.trim(); setCues((prev) => prev.map((c) => c.id === renameCueModal.id ? { ...c, displayName: v || undefined } : c)); setRenameCueModal(null); }}>
+                <button type="button" className="btn-sm" onClick={() => { const v = renameCueInput.trim(); markProjectDirty(); setCues((prev) => prev.map((c) => c.id === renameCueModal.id ? { ...c, displayName: v || undefined } : c)); setRenameCueModal(null); }}>
                   Save
                 </button>
-                <button type="button" className="btn-sm" onClick={() => { setCues((prev) => prev.map((c) => c.id === renameCueModal.id ? { ...c, displayName: undefined } : c)); setRenameCueModal(null); }}>
+                <button type="button" className="btn-sm" onClick={() => { markProjectDirty(); setCues((prev) => prev.map((c) => c.id === renameCueModal.id ? { ...c, displayName: undefined } : c)); setRenameCueModal(null); }}>
                   Clear (use file name)
                 </button>
                 <button type="button" className="btn-sm" onClick={() => setRenameCueModal(null)}>Cancel</button>
