@@ -4,9 +4,15 @@ There is **no custom Companion module** in this repo. You test by adding Compani
 
 ---
 
+## Railway: Companion service only
+
+When the app is hosted on **Netlify**, Railway only needs the **Companion service** (this `companion/` app). Deploy `companion/index.js` as a single Railway service — do **not** deploy the main API server (`server/index.js`) on Railway for this setup. The Netlify app uses Supabase directly for projects and companion state; Companion transport buttons call this Railway service.
+
+---
+
 ## 1. Get your URLs and code
 
-- **Base URL:** Your Railway API (e.g. `https://your-service.up.railway.app`). No trailing slash.
+- **Base URL:** Your Railway Companion API (e.g. `https://your-service.up.railway.app`). No trailing slash.
 - **Connection code:** The 6-character code shown in the controller (e.g. `AB12XY`). Same code the playout window uses.
 
 ---

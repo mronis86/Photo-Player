@@ -72,19 +72,9 @@ async function sendCommand(code, payload) {
   if (!entry?.channel) return;
   const cmdStr = payload.type === 'cue' ? `cue ${payload.cueIndex}` : payload.type === 'fade' ? `fade ${payload.fadeTo}` : payload.type;
   console.log(`[Companion API] command code=${code} ${cmdStr}`);
-  // Use httpSend so the broadcast reaches the controller even if our Realtime socket isn't ready (e.g. first button press).
-  if (typeof entry.channel.httpSend === 'function') {
-    try {
-      await entry.channel.httpSend(COMPANION_EVENT_CMD, payload);
-    } catch (e) {
-      console.warn('[Companion API] httpSend failed, falling back to send:', e?.message || e);
-      entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
-    }
-  } else {
-    entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
-  }
-  // Also push to WebSocket clients (e.g. local controller) so commands work when Realtime doesn't deliver to localhost
-  if (entry.wsClients && entry.wsClients.size > 0) {
+  const hasWsClients = entry.wsClients && entry.wsClients.size > 0;
+  // Send only one way to avoid double punch: if any controller is on WebSocket, use that; otherwise use Realtime.
+  if (hasWsClients) {
     const msg = JSON.stringify({ type: 'command', payload });
     entry.wsClients.forEach((ws) => {
       if (ws.readyState === 1) {
@@ -93,6 +83,17 @@ async function sendCommand(code, payload) {
         } catch (_) {}
       }
     });
+  } else {
+    if (typeof entry.channel.httpSend === 'function') {
+      try {
+        await entry.channel.httpSend(COMPANION_EVENT_CMD, payload);
+      } catch (e) {
+        console.warn('[Companion API] httpSend failed, falling back to send:', e?.message || e);
+        entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
+      }
+    } else {
+      entry.channel.send({ type: 'broadcast', event: COMPANION_EVENT_CMD, payload });
+    }
   }
 }
 

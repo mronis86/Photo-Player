@@ -7,7 +7,7 @@ import { buildPlayoutPayload } from '../../lib/buildPlayoutPayload';
 import { DEFAULT_MODE_OPTS, DEFAULT_CAPTION_STYLE } from '../../lib/types';
 import { getCueHoldDuration, getCueEOC, getCueFadeIn, getCueFadeOut, getCueModeOpts, getCueCaptionStyle, kbPointToXYZ, xyzToKbPoint, getCueStartXYZ, getCueEndXYZ, getKBScaleVar, getWipeClipPath, getCustomKBTransformFromXYZ } from '../../lib/controllerHelpers';
 import { runImageAnalysis } from '../../lib/imageAnalysis';
-import { listProjects, loadProject, saveProject, deleteProject, type ProjectRow } from '../../lib/projects';
+import { listProjects, loadProject, saveProject, deleteProject, getProjectStorageTypes, setProjectStorageType, enrichProjectListWithStorageTypes, type ProjectRow } from '../../lib/projects';
 import { uploadCueImage, uploadCueImageFromLocalSrc, getSignedUrl, deleteCueImage, listCueImages, isCloudStoredCue, type CloudCueFile } from '../../lib/storage';
 import { isLocalCueSrc } from '../../lib/tempAsset';
 import { isLocalRef, getLocalCueIdFromRef, toLocalRef, setLocalCueData, getLocalCueData, blobUrlToDataUrl } from '../../lib/localCueStorage';
@@ -372,10 +372,6 @@ export function Controller() {
   });
   const storeImagesInCloud = storeImagesMode === 'cloud';
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
-  const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('');
-  const [newProjectStoreMode, setNewProjectStoreMode] = useState<StoreImagesMode>('local');
-  const [newProjectAnalyzeOnImport, setNewProjectAnalyzeOnImport] = useState(false);
   const [deleteCueModal, setDeleteCueModal] = useState<{ cue: Cue } | null>(null);
   const [renameCueModal, setRenameCueModal] = useState<Cue | null>(null);
   const [renameCueInput, setRenameCueInput] = useState('');
@@ -384,6 +380,15 @@ export function Controller() {
   const [cloudFilesLoading, setCloudFilesLoading] = useState(false);
   const [cloudSelected, setCloudSelected] = useState<Set<string>>(new Set());
   const [localCueToastDismissed, setLocalCueToastDismissed] = useState(false);
+  const [setupWizardOpen, setSetupWizardOpen] = useState(false);
+  const [wizardImageMode, setWizardImageMode] = useState<StoreImagesMode>('local');
+  const [wizardPlayoutSameDevice, setWizardPlayoutSameDevice] = useState(true);
+  const [wizardStartWith, setWizardStartWith] = useState<'new' | 'open' | '' | string>('new');
+  const [wizardNewProjectName, setWizardNewProjectName] = useState('');
+  const [wizardProjectList, setWizardProjectList] = useState<ProjectRow[]>([]);
+  const [wizardProjectsLoading, setWizardProjectsLoading] = useState(false);
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3 | 4>(1);
+  const [wizardBypass, setWizardBypass] = useState(false);
   const [pushingCueId, setPushingCueId] = useState<string | null>(null);
   const [useAiAnalysis, setUseAiAnalysis] = useState(() => {
     try {
@@ -397,7 +402,11 @@ export function Controller() {
   /** Permanent Companion code for the current project (from DB). When set, Companion uses this instead of session connectionCode. */
   const [currentProjectCompanionCode, setCurrentProjectCompanionCode] = useState<string | null>(null);
   const [projectList, setProjectList] = useState<ProjectRow[]>([]);
-  const [projectListOpen, setProjectListOpen] = useState(false);
+  const [projectModalOpen, setProjectModalOpen] = useState(false);
+  const [projectModalStep, setProjectModalStep] = useState<1 | 2>(1);
+  const [projectModalMode, setProjectModalMode] = useState<'new' | 'open'>('new');
+  const [projectModalName, setProjectModalName] = useState('');
+  const [openProjectListLoading, setOpenProjectListLoading] = useState(false);
   const [deleteProjectModal, setDeleteProjectModal] = useState<ProjectRow | null>(null);
   const [projectSaveError, setProjectSaveError] = useState<string | null>(null);
   const [projectSaving, setProjectSaving] = useState(false);
@@ -627,13 +636,20 @@ export function Controller() {
   // Companion code: use project's permanent code when a project is open, otherwise session connectionCode
   const companionCodeForSession = (currentProjectCompanionCode ?? connectionCode).trim().toUpperCase();
 
-  // Companion (Bitfocus): subscribe to commands and broadcast state; use project code when project is open
+  // Companion (Bitfocus): subscribe to commands and broadcast state; use project code when project is open.
+  // When companionApiUrl is set we also get commands via Railway WebSocket — only handle commands from one source to avoid double punch (e.g. Preview Next firing twice).
+  const companionApiUrlRef = useRef(companionApiUrl);
+  companionApiUrlRef.current = companionApiUrl;
   useEffect(() => {
     const code = companionCodeForSession;
     if (!code) return;
+    const onCommand = (cmd: CompanionCommandPayload) => {
+      if (companionApiUrlRef.current) return;
+      companionExecuteCommandRef.current?.(cmd);
+    };
     const { unsubscribe } = joinCompanionChannelAsController(
       code,
-      (cmd: CompanionCommandPayload) => companionExecuteCommandRef.current?.(cmd),
+      onCommand,
       {
         onRequestState: () => {
           const payload = companionStateRef.current;
@@ -924,8 +940,9 @@ export function Controller() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (settingsModalOpen) setSettingsModalOpen(false);
-      else if (newProjectModalOpen) setNewProjectModalOpen(false);
+      if (setupWizardOpen) setSetupWizardOpen(false);
+      else if (projectModalOpen) setProjectModalOpen(false);
+      else if (settingsModalOpen) setSettingsModalOpen(false);
       else if (deleteProjectModal) setDeleteProjectModal(null);
       else if (deleteCueModal) setDeleteCueModal(null);
       else if (renameCueModal) setRenameCueModal(null);
@@ -933,11 +950,78 @@ export function Controller() {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [settingsModalOpen, newProjectModalOpen, deleteProjectModal, deleteCueModal, renameCueModal, cloudBrowserOpen]);
+  }, [setupWizardOpen, projectModalOpen, settingsModalOpen, deleteProjectModal, deleteCueModal, renameCueModal, cloudBrowserOpen]);
 
   useEffect(() => {
     if (renameCueModal) setRenameCueInput(renameCueModal.displayName ?? renameCueModal.name);
   }, [renameCueModal]);
+
+  // When setup wizard opens, sync choices from current settings and fetch project list
+  useEffect(() => {
+    if (!setupWizardOpen) return;
+    setWizardStep(1);
+    setWizardBypass(false);
+    setWizardImageMode(storeImagesMode);
+    setWizardStartWith('new');
+    const fetchList = async () => {
+      setWizardProjectsLoading(true);
+      try {
+        const list = await listProjects();
+        setWizardProjectList(enrichProjectListWithStorageTypes(list));
+      } catch {
+        setWizardProjectList([]);
+      } finally {
+        setWizardProjectsLoading(false);
+      }
+    };
+    fetchList();
+  }, [setupWizardOpen, storeImagesMode]);
+
+  const handleSetupWizardDone = () => {
+    setStoreImagesMode(wizardImageMode);
+    try {
+      localStorage.setItem('frameflow-setupWizardDone', 'true');
+    } catch (_) {}
+    setSetupWizardOpen(false);
+    if (wizardStartWith === 'new') {
+      const name = wizardNewProjectName.trim() || 'Untitled';
+      setCurrentProjectId(null);
+      setCurrentProjectName(name);
+      setCurrentProjectCompanionCode(null);
+      setCues([]);
+      setSections([{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }]);
+      setProgramCueItemIdx(-1);
+      setPreviewCueId(null);
+      setProjectSaveError(null);
+      lastSavedSnapshotRef.current = null;
+      setProjectDirty(false);
+    } else if (wizardStartWith !== '' && wizardStartWith !== 'new' && wizardStartWith !== 'open') {
+      handleLoadProject(wizardStartWith);
+    }
+  };
+
+  const handleSetupWizardSkip = () => {
+    try {
+      localStorage.setItem('frameflow-setupWizardDone', 'true');
+    } catch (_) {}
+    setSetupWizardOpen(false);
+  };
+
+  const handleSetupWizardBypassLoad = (projectId: string) => {
+    try {
+      localStorage.setItem('frameflow-setupWizardDone', 'true');
+    } catch (_) {}
+    setSetupWizardOpen(false);
+    handleLoadProject(projectId);
+  };
+
+  const handleSetupWizardOpenProject = (projectId: string) => {
+    try {
+      localStorage.setItem('frameflow-setupWizardDone', 'true');
+    } catch (_) {}
+    setSetupWizardOpen(false);
+    handleLoadProject(projectId);
+  };
 
   useEffect(() => {
     const el = dualMonitorsRef.current;
@@ -1685,24 +1769,53 @@ export function Controller() {
   };
 
   const handleNewProject = () => {
-    setNewProjectName('');
-    setNewProjectStoreMode(storeImagesMode);
-    setNewProjectAnalyzeOnImport(analyzeOnImport);
-    setNewProjectModalOpen(true);
+    setWizardStep(1);
+    setWizardBypass(false);
+    setWizardStartWith('new');
+    setWizardNewProjectName('');
+    setSetupWizardOpen(true);
   };
 
-  const handleCreateNewProject = () => {
+  const handleOpenProjectModal = async () => {
+    setProjectModalMode('open');
+    setProjectModalStep(2);
+    setProjectModalOpen(true);
+    setOpenProjectListLoading(true);
+    try {
+      const list = await listProjects();
+      setProjectList(enrichProjectListWithStorageTypes(list));
+    } catch (e) {
+      setProjectSaveError(e instanceof Error ? e.message : 'Load list failed');
+    } finally {
+      setOpenProjectListLoading(false);
+    }
+  };
+
+  const handleProjectModalNext = async () => {
+    if (projectModalStep === 1) {
+      if (projectModalMode === 'open' && projectList.length === 0 && !openProjectListLoading) {
+        setOpenProjectListLoading(true);
+        try {
+          const list = await listProjects();
+          setProjectList(enrichProjectListWithStorageTypes(list));
+        } catch (_) {}
+        finally { setOpenProjectListLoading(false); }
+      }
+      setProjectModalStep(2);
+    }
+  };
+
+  const handleCreateProjectFromModal = () => {
+    const name = projectModalName.trim() || 'Untitled';
     setCurrentProjectId(null);
-    setCurrentProjectName(newProjectName.trim() || 'Untitled');
+    setCurrentProjectName(name);
     setCurrentProjectCompanionCode(null);
-    setStoreImagesMode(newProjectStoreMode);
-    setAnalyzeOnImport(newProjectAnalyzeOnImport);
     setCues([]);
     setSections([{ id: `sec-${Date.now()}`, name: 'Main', cueIds: [] }]);
     setProgramCueItemIdx(-1);
     setPreviewCueId(null);
     setProjectSaveError(null);
-    setNewProjectModalOpen(false);
+    setProjectModalOpen(false);
     lastSavedSnapshotRef.current = null;
     setProjectDirty(false);
   };
@@ -1749,6 +1862,7 @@ export function Controller() {
         })
       );
       const { id, companionCode } = await saveProject(currentProjectId, currentProjectName, { cues: cuesToSave, sections });
+      setProjectStorageType(id, storeImagesMode);
       lastSavedSnapshotRef.current = projectSnapshotString(id, currentProjectName, cues, sections);
       setCurrentProjectId(id);
       setProjectDirty(false);
@@ -1767,22 +1881,10 @@ export function Controller() {
     }
   };
 
-  const handleOpenProjectList = async () => {
-    if (projectListOpen) {
-      setProjectListOpen(false);
-      return;
-    }
-    try {
-      const list = await listProjects();
-      setProjectList(list);
-      setProjectListOpen(true);
-    } catch (e) {
-      setProjectSaveError(e instanceof Error ? e.message : 'Load list failed');
-    }
-  };
+  const handleOpenProjectList = handleOpenProjectModal;
 
   const handleLoadProject = async (id: string) => {
-    setProjectListOpen(false);
+    setProjectModalOpen(false);
     setProjectSaveError(null);
     setProjectLoadingId(id);
     setProjectDirty(false); // Clear immediately so opening a project never shows yellow
@@ -1811,6 +1913,13 @@ export function Controller() {
       setPreviewCueId(firstId);
       lastSavedSnapshotRef.current = projectSnapshotString(id, name, payload.cues, payload.sections);
       setProjectDirty(false);
+      const storedTypes = getProjectStorageTypes();
+      const projectType = storedTypes[id];
+      if (projectType) {
+        setStoreImagesMode(projectType);
+      } else {
+        setProjectStorageType(id, storeImagesMode);
+      }
     } catch (e) {
       setProjectSaveError(e instanceof Error ? e.message : 'Load failed');
     } finally {
@@ -1893,9 +2002,377 @@ export function Controller() {
         </div>
       </header>
 
+      {setupWizardOpen && (
+        <div
+          className="wizard-overlay"
+          onClick={handleSetupWizardSkip}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="setup-wizard-title"
+        >
+          <div className="wizard-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="wizard-header">
+              <h2 id="setup-wizard-title" className="wizard-title">
+                {wizardBypass ? 'Open project' : 'Set up your project'}
+              </h2>
+              <button type="button" className="wizard-close" onClick={handleSetupWizardSkip} aria-label="Close">✕</button>
+            </div>
+
+            {wizardBypass ? (
+              <div className="wizard-body">
+                <p className="wizard-question">Choose a project to open</p>
+                {wizardProjectsLoading ? (
+                  <p className="wizard-hint">Loading projects…</p>
+                ) : wizardProjectList.length === 0 ? (
+                  <>
+                    <p className="wizard-hint">No projects yet.</p>
+                    <button type="button" className="wizard-btn wizard-btn-secondary" onClick={() => setWizardBypass(false)}>
+                      Set up a new project
+                    </button>
+                  </>
+                ) : (
+                  <div className="wizard-project-list">
+                    {wizardProjectList.map((p) => {
+                      const updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+                      return (
+                        <button
+                          key={p.id}
+                          type="button"
+                          className="wizard-project-row"
+                          onClick={() => handleSetupWizardBypassLoad(p.id)}
+                        >
+                          <span className="wizard-project-row-name">{p.name}</span>
+                          {updated && <span className="wizard-project-row-meta">{updated}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="wizard-steps">
+                  <span className={wizardStep >= 1 ? 'wizard-step on' : 'wizard-step'}>1</span>
+                  <span className="wizard-step-line" />
+                  <span className={wizardStep >= 2 ? 'wizard-step on' : 'wizard-step'}>2</span>
+                  <span className="wizard-step-line" />
+                  <span className={wizardStep >= 3 ? 'wizard-step on' : 'wizard-step'}>3</span>
+                  <span className="wizard-step-line" />
+                  <span className={wizardStep >= 4 ? 'wizard-step on' : 'wizard-step'}>4</span>
+                </div>
+
+                <div className="wizard-body">
+                  {wizardStep === 1 && (
+                    <>
+                      <p className="wizard-question">Where will your images live?</p>
+                      <div className="wizard-options">
+                        <button
+                          type="button"
+                          className={`wizard-card ${wizardImageMode === 'local' ? 'sel' : ''}`}
+                          onClick={() => setWizardImageMode('local')}
+                        >
+                          <strong>Local only</strong>
+                          <span className="wizard-card-desc">Images stay on this device. Using the local server, you can still run playout on another computer on the same network (e.g. Computer B) — open this app’s URL there.</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`wizard-card ${wizardImageMode === 'cloud' ? 'sel' : ''} ${!user ? 'disabled' : ''}`}
+                          onClick={() => user && setWizardImageMode('cloud')}
+                          disabled={!user}
+                        >
+                          <strong>Cloud</strong>
+                          <span className="wizard-card-desc">Upload and host in your account. Play from the web or other devices. Set up a new project below and save to sync. {!user && '(Sign in first)'}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`wizard-card ${wizardImageMode === 'hybrid' ? 'sel' : ''} ${!user ? 'disabled' : ''}`}
+                          onClick={() => user && setWizardImageMode('hybrid')}
+                          disabled={!user}
+                        >
+                          <strong>Mix of both</strong>
+                          <span className="wizard-card-desc">Local images plus import from cloud. With the local server, playout can run on another machine on the same network.</span>
+                        </button>
+                      </div>
+                      {wizardImageMode === 'cloud' && user && (
+                        <p className="wizard-hint wizard-hint--prompt">Create a new project in step 3 and save it to sync with your account.</p>
+                      )}
+                      {(wizardImageMode === 'local' || wizardImageMode === 'hybrid') && (
+                        <div className="wizard-download-local">
+                          <p className="wizard-hint" style={{ marginBottom: 8 }}>
+                            Need the app to run on your PC? Download the Windows package (no install).
+                          </p>
+                          {typeof import.meta.env.VITE_LOCAL_SERVER_DOWNLOAD_URL === 'string' && import.meta.env.VITE_LOCAL_SERVER_DOWNLOAD_URL.trim() ? (
+                            <a
+                              href={import.meta.env.VITE_LOCAL_SERVER_DOWNLOAD_URL.trim()}
+                              download
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn-download-app btn-download-app--settings"
+                            >
+                              ⬇ Download Windows app
+                            </a>
+                          ) : (
+                            <span
+                              className="btn-download-app btn-download-app--settings btn-download-app--disabled"
+                              title="Download not available"
+                            >
+                              ⬇ Download Windows app
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <button type="button" className="wizard-link" onClick={() => setWizardBypass(true)}>
+                        I have projects already — open one
+                      </button>
+                    </>
+                  )}
+
+                  {wizardStep === 2 && (
+                    <>
+                      <p className="wizard-question">Where will playout run?</p>
+                      {(wizardImageMode === 'local' || wizardImageMode === 'hybrid') && (
+                        <p className="wizard-hint">Using the local server? You can run playout on another computer (e.g. Computer B) by opening this app’s URL on that device — local images will work across the network.</p>
+                      )}
+                      <div className="wizard-options">
+                        <button
+                          type="button"
+                          className={`wizard-card ${wizardPlayoutSameDevice ? 'sel' : ''}`}
+                          onClick={() => setWizardPlayoutSameDevice(true)}
+                        >
+                          <strong>Same device</strong>
+                          <span className="wizard-card-desc">Controller and playout on this machine. Open playout in a tab.</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`wizard-card ${!wizardPlayoutSameDevice ? 'sel' : ''}`}
+                          onClick={() => setWizardPlayoutSameDevice(false)}
+                        >
+                          <strong>Different device</strong>
+                          <span className="wizard-card-desc">Control here, playout on another screen or machine. Use the connection code on playout.</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {wizardStep === 3 && (
+                    <>
+                      <p className="wizard-question">Start with</p>
+                      <div className="wizard-options">
+                        <button
+                          type="button"
+                          className={`wizard-card ${wizardStartWith === 'new' ? 'sel' : ''}`}
+                          onClick={() => setWizardStartWith('new')}
+                        >
+                          <strong>New project</strong>
+                          <span className="wizard-card-desc">Start from scratch. Next: set the project name.</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`wizard-card ${wizardStartWith === 'open' ? 'sel' : ''} ${wizardProjectList.length === 0 ? 'disabled' : ''}`}
+                          onClick={() => setWizardStartWith('open')}
+                          disabled={wizardProjectList.length === 0}
+                        >
+                          <strong>Open existing</strong>
+                          <span className="wizard-card-desc">{wizardProjectList.length === 0 ? 'No projects yet' : `Next: pick from ${wizardProjectList.length} project(s).`}</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                  {wizardStep === 4 && wizardStartWith === 'new' && (
+                    <>
+                      <p className="wizard-question">Project name</p>
+                      <label className="wizard-label" htmlFor="wizard-new-project-name">Name your project</label>
+                      <input
+                        id="wizard-new-project-name"
+                        type="text"
+                        className="wizard-input"
+                        value={wizardNewProjectName}
+                        onChange={(e) => setWizardNewProjectName(e.target.value)}
+                        placeholder="My project"
+                        autoFocus
+                      />
+                    </>
+                  )}
+
+                  {wizardStep === 4 && wizardStartWith === 'open' && (
+                    <>
+                      <p className="wizard-question">Choose a project to open</p>
+                      {wizardProjectList.length === 0 ? (
+                        <p className="wizard-hint">No projects yet. Go back and create one with New project.</p>
+                      ) : (
+                        <div className="wizard-project-list">
+                          {wizardProjectList.map((p) => {
+                            const updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+                            return (
+                              <button
+                                key={p.id}
+                                type="button"
+                                className="wizard-project-row"
+                                onClick={() => handleSetupWizardOpenProject(p.id)}
+                              >
+                                <span className="wizard-project-row-name">{p.name}</span>
+                                {updated && <span className="wizard-project-row-meta">{updated}</span>}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <div className="wizard-footer">
+                  {wizardStep > 1 ? (
+                    <button type="button" className="wizard-btn wizard-btn-secondary" onClick={() => setWizardStep((s) => (s - 1) as 1 | 2 | 3 | 4)}>
+                      Back
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+                  <div className="wizard-footer-right">
+                    {wizardStep < 4 ? (
+                      <button
+                        type="button"
+                        className="wizard-btn wizard-btn-primary"
+                        onClick={() => setWizardStep((s) => (s + 1) as 1 | 2 | 3 | 4)}
+                        disabled={wizardStep === 3 && wizardStartWith !== 'new' && wizardStartWith !== 'open'}
+                      >
+                        Next
+                      </button>
+                    ) : wizardStartWith === 'new' ? (
+                      <>
+                        <button type="button" className="wizard-btn wizard-btn-secondary" onClick={handleSetupWizardSkip}>
+                          Skip
+                        </button>
+                        <button type="button" className="wizard-btn wizard-btn-primary" onClick={handleSetupWizardDone}>
+                          Get started
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {projectModalOpen && (
+        <div
+          className="wizard-overlay"
+          onClick={() => setProjectModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="project-modal-title"
+        >
+          <div className="wizard-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="wizard-header">
+              <h2 id="project-modal-title" className="wizard-title">
+                {projectModalStep === 1 ? 'New or open project' : projectModalMode === 'new' ? 'New project' : 'Open project'}
+              </h2>
+              <button type="button" className="wizard-close" onClick={() => setProjectModalOpen(false)} aria-label="Close">✕</button>
+            </div>
+            <div className="wizard-body">
+              {projectModalStep === 1 ? (
+                <>
+                  <p className="wizard-question">What do you want to do?</p>
+                  <div className="wizard-options">
+                    <button
+                      type="button"
+                      className={`wizard-card ${projectModalMode === 'new' ? 'sel' : ''}`}
+                      onClick={() => setProjectModalMode('new')}
+                    >
+                      <strong>New project</strong>
+                      <span className="wizard-card-desc">Create a new project and set its name.</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`wizard-card ${projectModalMode === 'open' ? 'sel' : ''}`}
+                      onClick={() => setProjectModalMode('open')}
+                    >
+                      <strong>Open project</strong>
+                      <span className="wizard-card-desc">Choose from your existing projects.</span>
+                    </button>
+                  </div>
+                </>
+              ) : projectModalMode === 'new' ? (
+                <>
+                  <label className="wizard-label" htmlFor="project-modal-name">Project name</label>
+                  <input
+                    id="project-modal-name"
+                    type="text"
+                    className="wizard-input"
+                    value={projectModalName}
+                    onChange={(e) => setProjectModalName(e.target.value)}
+                    placeholder="My project"
+                    autoFocus
+                  />
+                </>
+              ) : (
+                <>
+                  {openProjectListLoading ? (
+                    <p className="wizard-hint">Loading projects…</p>
+                  ) : projectList.length === 0 ? (
+                    <p className="wizard-hint">No projects yet. Go back and create one with New project.</p>
+                  ) : (
+                    <div className="wizard-project-list">
+                      {projectList.map((p) => {
+                        const updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+                        return (
+                          <div key={p.id} className="wizard-project-row-wrap">
+                            <button
+                              type="button"
+                              className="wizard-project-row"
+                              onClick={() => handleLoadProject(p.id)}
+                            >
+                              <span className="wizard-project-row-name">{p.name}</span>
+                              {updated && <span className="wizard-project-row-meta">{updated}</span>}
+                            </button>
+                            <button
+                              type="button"
+                              className="wizard-project-row-del"
+                              onClick={(e) => { e.stopPropagation(); setProjectModalOpen(false); setDeleteProjectModal(p); }}
+                              title="Delete project"
+                              aria-label={`Delete ${p.name}`}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="wizard-footer">
+              {projectModalStep === 2 ? (
+                <button type="button" className="wizard-btn wizard-btn-secondary" onClick={() => setProjectModalStep(1)}>
+                  Back
+                </button>
+              ) : (
+                <span />
+              )}
+              <div className="wizard-footer-right">
+                {projectModalStep === 1 ? (
+                  <button type="button" className="wizard-btn wizard-btn-primary" onClick={handleProjectModalNext}>
+                    Next
+                  </button>
+                ) : projectModalMode === 'new' ? (
+                  <button type="button" className="wizard-btn wizard-btn-primary" onClick={handleCreateProjectFromModal}>
+                    Create
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {cues.some((c) => isLocalCueSrc(c.src) || isLocalRef(c.src)) && !localCueToastDismissed && (
         <div className="local-cue-toast" role="status">
-          <span>Local files will only play via the local server app. Push to cloud (<span className="toast-cloud-icon" aria-hidden><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></span> on a cue) to play from Netlify or other devices.</span>
+          <span>Local files will only play via the local server app. Push to cloud (<span className="toast-cloud-icon" aria-hidden><svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg></span> on a cue) to play from the web or other devices.</span>
           <button type="button" className="local-cue-toast-dismiss" onClick={() => setLocalCueToastDismissed(true)} aria-label="Dismiss">✕</button>
         </div>
       )}
@@ -1929,7 +2406,7 @@ export function Controller() {
                 type="button"
                 className="btn-sm"
                 onClick={handleOpenProjectList}
-                aria-expanded={projectListOpen}
+                aria-expanded={projectModalOpen}
               >
                 Open
               </button>
@@ -1950,26 +2427,6 @@ export function Controller() {
                 </span>
               )}
             </div>
-            {projectListOpen && projectList.length > 0 && (
-              <ul className="project-list">
-                {projectList.map((p) => (
-                  <li key={p.id} className="project-list-item">
-                    <button type="button" className="project-list-btn" onClick={() => handleLoadProject(p.id)}>
-                      {p.name}
-                    </button>
-                    <button
-                      type="button"
-                      className="project-list-del"
-                      onClick={(e) => { e.stopPropagation(); setDeleteProjectModal(p); }}
-                      title="Delete project"
-                      aria-label={`Delete ${p.name}`}
-                    >
-                      ✕
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
             {projectSaveError && (
               <p style={{ fontSize: 10, color: 'var(--red)', marginTop: 6, maxWidth: 280 }} title={projectSaveError}>
                 {projectSaveError}
@@ -2033,12 +2490,14 @@ export function Controller() {
             {(user && (storeImagesMode === 'cloud' || storeImagesMode === 'hybrid')) && (
               <button
                 type="button"
-                className="btn-sm"
+                className="btn-sm btn-from-cloud"
                 style={{ marginTop: 8, width: '100%' }}
                 onClick={handleOpenCloudBrowser}
               >
-                <svg viewBox="0 0 24 24" fill="currentColor" className="cloud-icon-svg" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
-                {' '}From cloud
+                <span className="from-cloud-icon" aria-hidden>
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="1em" height="1em" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>
+                </span>
+                {' '}From Cloud
               </button>
             )}
           </div>
@@ -2144,7 +2603,7 @@ export function Controller() {
                                       className="cue-act-btn"
                                       disabled={pushingCueId === cue.id}
                                       onClick={(e) => { e.stopPropagation(); void handlePushCueToCloud(cue); }}
-                                      title="Push to cloud so it plays from Netlify and other devices"
+                                      title="Push to cloud so it plays from the web and other devices"
                                     >
                                       {pushingCueId === cue.id ? '…' : <svg viewBox="0 0 24 24" fill="currentColor" className="cloud-icon-svg" aria-hidden><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96z"/></svg>}
                                     </button>
@@ -2612,14 +3071,14 @@ export function Controller() {
                 <div className={`mode-sub ${panelMode === 'fullscreen' ? 'active' : ''}`}>
                   <div className="mode-sub-lbl">FULLSCREEN OPTIONS</div>
                   <div className="ctrl-row">
-                    <div className="ctrl-label">Vignette Overlay <em>{panelModeOpts.fullscreen?.vignette ? 'On' : 'Off'}</em></div>
+                    <div className="ctrl-label">Vignette Overlay</div>
                     <div className="sel-row-2" style={{ marginTop: 4 }}>
                       <button type="button" className={`sel-btn ${!panelModeOpts.fullscreen?.vignette ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, fullscreen: { ...m.fullscreen, vignette: false } }))}>OFF</button>
                       <button type="button" className={`sel-btn ${panelModeOpts.fullscreen?.vignette ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, fullscreen: { ...m.fullscreen, vignette: true } }))}>ON</button>
                     </div>
                   </div>
                   <div className="ctrl-row" style={{ marginBottom: 0 }}>
-                    <div className="ctrl-label">Object Fit <em>{(panelModeOpts.fullscreen?.objectFit ?? 'cover') === 'cover' ? 'Fill' : 'Fit'}</em></div>
+                    <div className="ctrl-label">Object Fit</div>
                     <div className="sel-row-2" style={{ marginTop: 4 }}>
                       <button type="button" className={`sel-btn ${(panelModeOpts.fullscreen?.objectFit ?? 'cover') === 'cover' ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, fullscreen: { ...m.fullscreen, objectFit: 'cover' } }))}>Fill</button>
                       <button type="button" className={`sel-btn ${panelModeOpts.fullscreen?.objectFit === 'contain' ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, fullscreen: { ...m.fullscreen, objectFit: 'contain' } }))}>Fit</button>
@@ -2645,7 +3104,7 @@ export function Controller() {
                     <input type="range" min={30} max={100} value={panelModeOpts.blurbg?.frameHeight ?? 70} onChange={(e) => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, frameHeight: Number(e.target.value) } }))} />
                   </div>
                   <div className="ctrl-row">
-                    <div className="ctrl-label">Fill frame <em>{panelModeOpts.blurbg?.fillFrame !== false ? 'On' : 'Off'}</em></div>
+                    <div className="ctrl-label">Fill frame</div>
                     <div className="sel-row-2" style={{ marginTop: 4 }}>
                       <button type="button" className={`sel-btn ${panelModeOpts.blurbg?.fillFrame === false ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, fillFrame: false } }))}>OFF</button>
                       <button type="button" className={`sel-btn ${panelModeOpts.blurbg?.fillFrame !== false ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, fillFrame: true } }))}>ON</button>
@@ -2653,7 +3112,7 @@ export function Controller() {
                     <div className="ctrl-hint" style={{ marginTop: 2 }}>Pre-zoom image to fill frame edge-to-edge (no empty space). Motion presets run on top.</div>
                   </div>
                   <div className="ctrl-row">
-                    <div className="ctrl-label">Border <em>{panelModeOpts.blurbg?.showBorder ? 'On' : 'Off'}</em></div>
+                    <div className="ctrl-label">Border</div>
                     <div className="sel-row-2" style={{ marginTop: 4 }}>
                       <button type="button" className={`sel-btn ${!panelModeOpts.blurbg?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, showBorder: false } }))}>OFF</button>
                       <button type="button" className={`sel-btn ${panelModeOpts.blurbg?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, blurbg: { ...DEFAULT_MODE_OPTS.blurbg, ...m.blurbg, showBorder: true } }))}>ON</button>
@@ -2711,7 +3170,7 @@ export function Controller() {
                     </div>
                   </div>
                   <div className="ctrl-row">
-                    <div className="ctrl-label">Border <em>{panelModeOpts.split?.showBorder ? 'On' : 'Off'}</em></div>
+                    <div className="ctrl-label">Border</div>
                     <div className="sel-row-2" style={{ marginTop: 4 }}>
                       <button type="button" className={`sel-btn ${!panelModeOpts.split?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, split: { ...DEFAULT_MODE_OPTS.split, ...m.split, showBorder: false } }))}>OFF</button>
                       <button type="button" className={`sel-btn ${panelModeOpts.split?.showBorder ? 'on-b' : ''}`} onClick={() => setPanelModeOpts((m) => ({ ...m, split: { ...DEFAULT_MODE_OPTS.split, ...m.split, showBorder: true } }))}>ON</button>
@@ -3312,98 +3771,45 @@ export function Controller() {
               <p className="settings-hint">
                 Local: data in project. Hybrid: local + import from cloud. Cloud: upload to your account.
               </p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {newProjectModalOpen && (
-        <div
-          className="settings-modal-overlay"
-          onClick={() => setNewProjectModalOpen(false)}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="new-project-modal-title"
-        >
-          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="settings-modal-header">
-              <h2 id="new-project-modal-title" className="settings-modal-title">New project</h2>
-              <button
-                type="button"
-                className="settings-modal-close"
-                onClick={() => setNewProjectModalOpen(false)}
-                aria-label="Close"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="settings-modal-body">
-              <div className="settings-row">
-                <span className="settings-label">Project name</span>
-                <input
-                  type="text"
-                  className="project-name-input"
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  placeholder="My project"
-                  autoFocus
-                />
-              </div>
-              <div className="settings-row">
-                <span className="settings-label">Store images</span>
-                <div className="settings-control">
-                  <label className="settings-radio">
-                    <input
-                      type="radio"
-                      name="newProjectStore"
-                      checked={newProjectStoreMode === 'local'}
-                      onChange={() => setNewProjectStoreMode('local')}
-                    />
-                    Local
-                  </label>
-                  <label className={`settings-radio ${!user ? 'disabled' : ''}`}>
-                    <input
-                      type="radio"
-                      name="newProjectStore"
-                      checked={newProjectStoreMode === 'hybrid'}
-                      onChange={() => setNewProjectStoreMode('hybrid')}
-                      disabled={!user}
-                    />
-                    Hybrid {!user && '(sign in)'}
-                  </label>
-                  <label className={`settings-radio ${!user ? 'disabled' : ''}`}>
-                    <input
-                      type="radio"
-                      name="newProjectStore"
-                      checked={newProjectStoreMode === 'cloud'}
-                      onChange={() => setNewProjectStoreMode('cloud')}
-                      disabled={!user}
-                    />
-                    Cloud {!user && '(sign in)'}
-                  </label>
-                </div>
-              </div>
-              <p className="settings-hint">
-                Local: data in project. Hybrid: local + import from cloud. Cloud: upload to your account.
+              <p className="settings-hint" style={{ marginTop: 12 }}>
+                <button
+                  type="button"
+                  className="btn-sm btn-sm-dashed"
+                  style={{ background: 'transparent', color: 'var(--text3)' }}
+                  onClick={() => {
+                    try { localStorage.removeItem('frameflow-setupWizardDone'); } catch (_) {}
+                    setSettingsModalOpen(false);
+                    setSetupWizardOpen(true);
+                  }}
+                >
+                  Run setup wizard again
+                </button>
               </p>
-              <div className="settings-row">
-                <span className="settings-label">Import</span>
-                <label className="settings-check">
-                  <input
-                    type="checkbox"
-                    checked={newProjectAnalyzeOnImport}
-                    onChange={(e) => setNewProjectAnalyzeOnImport(e.target.checked)}
-                  />
-                  Analyze on import
-                </label>
-              </div>
-              <div className="settings-modal-actions">
-                <button type="button" className="btn-sm" onClick={() => setNewProjectModalOpen(false)}>
-                  Cancel
-                </button>
-                <button type="button" className="btn-sm primary" onClick={handleCreateNewProject}>
-                  Create
-                </button>
+              <div className="settings-row settings-row-download" style={{ marginTop: 20 }}>
+                <span className="settings-label">Local server</span>
+                <div className="settings-control settings-control-download">
+                  <p className="settings-hint settings-hint-download">
+                    Get the Windows app to run the controller and playout on your network (no install).
+                  </p>
+                  {typeof import.meta.env.VITE_LOCAL_SERVER_DOWNLOAD_URL === 'string' && import.meta.env.VITE_LOCAL_SERVER_DOWNLOAD_URL.trim() ? (
+                    <a
+                      href={import.meta.env.VITE_LOCAL_SERVER_DOWNLOAD_URL.trim()}
+                      download
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-download-app btn-download-app--settings"
+                    >
+                      ⬇ Download Windows app
+                    </a>
+                  ) : (
+                    <span
+                      className="btn-download-app btn-download-app--settings btn-download-app--disabled"
+                      title="Download not available"
+                    >
+                      ⬇ Download Windows app
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -3420,7 +3826,7 @@ export function Controller() {
         >
           <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
             <div className="settings-modal-header">
-              <h2 id="delete-project-modal-title" className="settings-modal-title">Delete project</h2>
+              <h2 id="delete-project-modal-title" className="settings-modal-title">Confirm delete</h2>
               <button
                 type="button"
                 className="settings-modal-close"
@@ -3432,14 +3838,14 @@ export function Controller() {
             </div>
             <div className="settings-modal-body">
               <p className="settings-hint">
-                Delete &quot;{deleteProjectModal.name}&quot;? This cannot be undone.
+                Are you sure you want to permanently delete &quot;{deleteProjectModal.name}&quot;? This cannot be undone.
               </p>
               <div className="settings-modal-actions">
                 <button type="button" className="btn-sm" onClick={() => setDeleteProjectModal(null)}>
                   Cancel
                 </button>
                 <button type="button" className="btn-sm danger" onClick={handleConfirmDeleteProject}>
-                  Delete
+                  Yes, delete project
                 </button>
               </div>
             </div>
